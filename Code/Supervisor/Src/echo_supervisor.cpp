@@ -13,13 +13,13 @@ int main() {
         return 1;
     }
 
-    struct sockaddr_in super_addr;
-    memset(&super_addr, 0, sizeof(super_addr));
-    super_addr.sin_family = AF_INET;
-    super_addr.sin_addr.s_addr = INADDR_ANY;
-    super_addr.sin_port = htons(8080);
+    struct sockaddr_in server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(8080);
 
-    int bind_result = ::bind(superSoc, (struct sockaddr*)&super_addr, sizeof(super_addr));
+    int bind_result = ::bind(superSoc, (struct sockaddr*)&server_addr, sizeof(server_addr));
     if (bind_result < 0) {
         cout << "Error binding socket to port 8080" << endl;
         close(superSoc);

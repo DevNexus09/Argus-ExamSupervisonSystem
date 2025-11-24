@@ -8,12 +8,13 @@
 using namespace std;
 
 int main() {
-    int studentID;
-    string studentName;
+    string studentName, studentID;
     cout << " Enter Your Name: ";
     cin >> studentName;
+    
     cout << " Enter Your Student Id No: ";
     cin >> studentID;
+    cin.ignore();
 
     
     int studentsSoc = socket(AF_INET, SOCK_STREAM, 0);
@@ -42,15 +43,13 @@ int main() {
     }
     cout << "Connected to Supervisor server" << endl;
 
-    const char* message = "Good Morning Sir";
+    string messageStr = "Good Morning Sir, I am " + studentName + " " + studentID;
+    const char* message = messageStr.c_str();
     ssize_t bytes_sent = send(studentsSoc, message, strlen(message), 0);
     if (bytes_sent < 0) {
         cout << "Error sending message" << endl;
-    } else {
-        cout << message << "I am " << studentName << studentID << endl;
     }
 
-    // Receive response
     char buffer[1024] = {0};
     ssize_t bytes_received = recv(studentsSoc, buffer, sizeof(buffer) - 1, 0);
     if (bytes_received < 0) {
@@ -60,6 +59,7 @@ int main() {
         cout << "Response from server: " << buffer << endl;
     }
 
+    cin.get();
     close(studentsSoc);
 
     return 0;

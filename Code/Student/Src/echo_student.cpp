@@ -10,11 +10,9 @@ using namespace std;
 int main() {
     string studentName, studentID;
     cout << " Enter Your Name: ";
-    cin >> studentName;
-    
+    getline(cin, studentName);
     cout << " Enter Your Student Id No: ";
-    cin >> studentID;
-    cin.ignore();
+    getline(cin, studentID);
 
     
     int studentsSoc = socket(AF_INET, SOCK_STREAM, 0);

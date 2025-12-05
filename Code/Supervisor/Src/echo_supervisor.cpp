@@ -8,7 +8,7 @@
 
 using namespace std;
 
-#define maxStudents 30
+#define maxStudents 56
 
 int main() {
     int superSoc = socket(AF_INET, SOCK_STREAM, 0);

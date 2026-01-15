@@ -4,61 +4,127 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <netinet/ip.h>
+#include <netinet/udp.h>
+#include <time.h>
+#include "../../Common/include/protocol.h"
+#include "../../Common/include/trie.h"
 
 using namespace std;
 
+struct pseudo_iphdr {
+    uint8_t version_ihl;
+    uint8_t tos;
+    uint16_t tot_len;
+    uint16_t id;
+    uint16_t frag_off;
+    uint8_t ttl;
+    uint8_t protocol;
+    uint16_t check;
+    uint32_t saddr;
+    uint32_t daddr;
+};
+
+struct pseudo_udphdr {
+    uint16_t source;
+    uint16_t dest;
+    uint16_t len;
+    uint16_t check;
+};
+
+void GetDomainName(unsigned char* dns, unsigned char* buffer, string& domain) {
+    int i = 0;
+    while (dns[i] != 0) {
+        int length = dns[i];
+        for (int j = 0; j < length; j++) {
+            i++;
+            domain += (char)dns[i];
+        }
+        i++;
+        if (dns[i] != 0) {
+            domain += '.';
+        }
+    }
+}
+
 int main() {
-    string studentName, studentID;
+    string studentName, studentIDStr;
     cout << " Enter Your Name: ";
     getline(cin, studentName);
     cout << " Enter Your Student Id No: ";
-    getline(cin, studentID);
-
+    getline(cin, studentIDStr);
     
-    int studentsSoc = socket(AF_INET, SOCK_STREAM, 0);
-    if (studentsSoc < 0) {
-        cout << "Error creating socket" << endl;
-        return 1;
+    uint32_t myID = 0;
+    try {
+        myID = stoi(studentIDStr);
+    } catch(...) {
+        myID = 99999;
     }
 
+    Trie* whitelist = new Trie();
+    if (Load(whitelist, "../config/whitelist.txt")) {
+        cout << "Whitelist loaded" << endl;
+    } else {
+        cout << "Could not load whitelist" << endl;
+    }
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(8080);
-    
-    string serverIP = "127.0.0.1";
-    int ptonResult = inet_pton(AF_INET, serverIP.c_str(), &server_addr.sin_addr);
-    
-    if (ptonResult <= 0) {
-        cout << "Invalid address" << endl;
-        return -1;
+    inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
+
+    if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        cout << "Could not connect to Supervisor" << endl;
+    } else {
+        cout << "Connected to Supervisor" << endl;
     }
 
-    if (connect(studentsSoc, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        cout << "Connection failed" << endl;
-        close(studentsSoc);
+    int raw_sock = socket(AF_INET, SOCK_RAW, IPPROTO_UDP);
+    if (raw_sock < 0) {
+        cout << "ERROR: Could not create raw socket" << endl;
         return 1;
     }
-    cout << "Connected to Supervisor server" << endl;
+    
+    unsigned char buffer[65536];
 
-    string messageStr = "Good Morning Sir, I am " + studentName + " " + studentID;
-    const char* message = messageStr.c_str();
-    ssize_t bytes_sent = send(studentsSoc, message, strlen(message), 0);
-    if (bytes_sent < 0) {
-        cout << "Error sending message" << endl;
+    while (true) {
+        memset(buffer, 0, 65536);
+        
+        int data_size = recvfrom(raw_sock, buffer, 65536, 0, NULL, NULL);
+        if (data_size < 0) continue;
+
+        struct pseudo_iphdr *ip_header = (struct pseudo_iphdr*)buffer;
+        int ip_len = (ip_header->version_ihl & 0x0F) * 4;
+
+        struct pseudo_udphdr *udp_header = (struct pseudo_udphdr*)(buffer + ip_len);
+
+        if (ntohs(udp_header->dest) == 53) {
+            unsigned char* dns_part = buffer + ip_len + sizeof(struct udphdr);
+            unsigned char* dns_question = dns_part + 12;
+
+            string website = "";
+            GetDomainName(dns_question, buffer, website);
+
+            cout << "Found DNS Request: " << website << endl;
+
+            bool isAllowed = WildcardMatch(whitelist, website);
+
+            if (!isAllowed) {
+                cout << "VIOLATION! Sending alert..." << endl;
+                Message msg = CreateMsg(msgViolation, myID, time(0), website.c_str(), website.length());
+                
+                char sendBuffer[1024];
+                int bytesToSend = serialize(msg, sendBuffer);
+                
+                send(sock, sendBuffer, bytesToSend, 0);
+            } else {
+                cout << "ALLOWED" << endl;
+            }
+        }
     }
 
-    char buffer[1024] = {0};
-    ssize_t bytes_received = recv(studentsSoc, buffer, sizeof(buffer) - 1, 0);
-    if (bytes_received < 0) {
-        cout << "Error receiving response" << endl;
-    } else {
-        buffer[bytes_received] = '\0';
-        cout << "Response from server: " << buffer << endl;
-    }
-
-    cin.get();
-    close(studentsSoc);
-
+    close(sock);
+    close(raw_sock);
     return 0;
 }

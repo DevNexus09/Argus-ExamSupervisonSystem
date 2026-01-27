@@ -42,7 +42,7 @@ uint32_t CalculateChecksum(const Message& msg) {
     return sum % 256;
 }
 
-bool verify_checksum(const Message& msg) {
+bool VerifyChecksum(const Message& msg) {
     uint32_t calculated = CalculateChecksum(msg);
     return calculated == msg.checksum;
 }

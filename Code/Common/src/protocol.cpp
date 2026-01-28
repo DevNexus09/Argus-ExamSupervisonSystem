@@ -34,6 +34,8 @@ uint32_t CalculateChecksum(const Message& msg) {
     
     sum += (msg.dataLength >> 8) & 0xFF;
     sum += msg.dataLength & 0xFF;
+
+    for(int i = 0; i < 32; i++) sum += (unsigned char)msg.studentName[i];
     
     for (int i = 0; i < msg.dataLength && i < 512; i++) {
         sum += (unsigned char)msg.data[i];
@@ -56,6 +58,9 @@ int serialize(const Message& msg, char* buffer) {
     memcpy(buffer + offset, &stuID, sizeof(uint32_t));
     offset += sizeof(uint32_t);
     
+    memcpy(buffer + offset, msg.studentName, 32);
+    offset += 32;
+
     uint32_t timestp = htonl(msg.timestamp);
     memcpy(buffer + offset, &timestp, sizeof(uint32_t));
     offset += sizeof(uint32_t);
@@ -86,6 +91,9 @@ int deserialize(const char* buffer, Message* msg) {
     memcpy(&stuID, buffer + offset, sizeof(uint32_t));
     msg->studentID = ntohl(stuID);
     offset += sizeof(uint32_t);
+
+    memcpy(msg->studentName, buffer + offset, 32);
+    offset += 32;
     
     uint32_t timestp;
     memcpy(&timestp, buffer + offset, sizeof(uint32_t));

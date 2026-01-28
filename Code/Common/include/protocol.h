@@ -6,10 +6,13 @@
 #define msgConnected 1
 #define msgViolation 2
 #define msgACK 3
+#define msgHeartbeat 4  // Added for Heartbeat feature
+#define msgTamper 5     // Added for Anti-Tampering feature
 
 struct Message {
     uint8_t msgType;       
     uint32_t studentID;
+    char studentName[32];
     uint32_t timestamp;
     uint16_t dataLength;
     char data[512];

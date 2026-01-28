@@ -32,3 +32,6 @@ mobile.events.data.microsoft.com
 b._dns-sd._udp.0.200.100.10.in-addr.arpa
 mask.icloud.com
 mask.apple-dns.net
+i.scdn.co
+growthbook.mywot.com
+www.google-analytics.com

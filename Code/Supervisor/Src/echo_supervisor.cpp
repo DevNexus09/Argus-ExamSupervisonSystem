@@ -7,13 +7,42 @@
 #include <arpa/inet.h>
 #include <sys/select.h>
 #include <ctime>
+#include <map>      // Added for tracking violations
+#include <fstream>  // Added for file I/O
 #include "../../Common/include/protocol.h"
-#include "../include/dashboard.h" // Include the separate dashboard module
+#include "../include/dashboard.h" 
 
 using namespace std;
 
 #define PORT 8080
 #define MAX_CLIENTS 30
+#define REPORT_FILE "violation_report.txt"
+
+// Structure to hold student stats
+struct StudentStats {
+    string name;
+    int totalViolations;
+};
+
+// Map to store stats by Student ID
+map<uint32_t, StudentStats> violationRecords;
+
+// Function to save the report to a text file
+void saveReport() {
+    ofstream file(REPORT_FILE);
+    if (file.is_open()) {
+        file << "Student Name, Student ID, Total Violations" << endl;
+        for (const auto& entry : violationRecords) {
+            file << entry.second.name << ", " 
+                 << entry.first << ", " 
+                 << entry.second.totalViolations << endl;
+        }
+        file.close();
+        // Optional: cout << "[System] Violation report updated." << endl;
+    } else {
+        cerr << "[Error] Unable to write to " << REPORT_FILE << endl;
+    }
+}
 
 int main() {
     // Initialize Dashboard
@@ -128,12 +157,21 @@ int main() {
                         if (msg.dataLength < 512) msg.data[msg.dataLength] = '\0';
                         string website(msg.data);
                         
+                        // --- NEW FEATURE IMPLEMENTATION ---
+                        // 1. Update In-Memory Records
+                        // Ensure null termination for student name (safety)
+                        msg.studentName[31] = '\0'; 
+                        string sName(msg.studentName);
+
+                        violationRecords[msg.studentID].name = sName;
+                        violationRecords[msg.studentID].totalViolations++;
+
+                        // 2. Save to File
+                        saveReport();
+                        // ----------------------------------
+
                         // Update Dashboard: Violation Recorded
                         dashboard.recordViolation(msg.studentID, website);
-                        
-                        // Force immediate render on violation? 
-                        // Optional, but user asked for 5 sec refresh. 
-                        // We stick to timer, but update log immediately if we wanted.
                     }
                 }
             }

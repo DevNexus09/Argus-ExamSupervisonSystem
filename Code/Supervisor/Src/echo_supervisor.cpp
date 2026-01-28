@@ -8,6 +8,7 @@
 #include <sys/select.h>
 #include <ctime>
 #include "../../Common/include/protocol.h"
+#include "../include/dashboard.h" // Include the separate dashboard module
 
 using namespace std;
 
@@ -15,6 +16,9 @@ using namespace std;
 #define MAX_CLIENTS 30
 
 int main() {
+    // Initialize Dashboard
+    Dashboard dashboard;
+
     // 1. Setup Connection
     int master_socket, new_socket, client_socket[MAX_CLIENTS], max_sd, sd, valread;
     struct sockaddr_in address;
@@ -27,7 +31,7 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    // Force reuse of port 8080 (Fixes "Address already in use" errors)
+    // Force reuse of port
     int opt = 1;
     if (setsockopt(master_socket, SOL_SOCKET, SO_REUSEADDR, (char *)&opt, sizeof(opt)) < 0) {
         perror("setsockopt");
@@ -35,7 +39,7 @@ int main() {
     }
 
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY; // Listen on all interfaces
+    address.sin_addr.s_addr = INADDR_ANY; 
     address.sin_port = htons(PORT);
 
     if (::bind(master_socket, (struct sockaddr *)&address, sizeof(address)) < 0) {
@@ -48,11 +52,11 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    cout << "--- SUPERVISOR SERVER STARTED ---" << endl;
-    cout << "Listening for Student connections on 127.0.0.1:" << PORT << endl;
-
     fd_set readfds;
     int addrlen = sizeof(address);
+
+    // Initial render
+    dashboard.render();
 
     // 2. Main Loop
     while (true) {
@@ -66,8 +70,24 @@ int main() {
             if (sd > max_sd) max_sd = sd;
         }
 
-        // Wait for activity
-        select(max_sd + 1, &readfds, NULL, NULL, NULL);
+        // Timeout for select (1 second) to allow non-blocking dashboard refresh
+        struct timeval tv;
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+
+        int activity = select(max_sd + 1, &readfds, NULL, NULL, &tv);
+
+        // Check dashboard refresh timer
+        if (dashboard.shouldRefresh()) {
+            dashboard.render();
+        }
+
+        if ((activity < 0) && (errno != EINTR)) {
+            perror("select error");
+        }
+        
+        // If timeout occurred (activity == 0), just continue loop to check timer again
+        if (activity == 0) continue;
 
         // New Connection
         if (FD_ISSET(master_socket, &readfds)) {
@@ -80,7 +100,8 @@ int main() {
             for (int i = 0; i < MAX_CLIENTS; i++) {
                 if (client_socket[i] == 0) {
                     client_socket[i] = new_socket;
-                    cout << "[System] Student connected from Local Machine." << endl;
+                    // Update Dashboard: Connection Added
+                    dashboard.updateConnection(true, inet_ntoa(address.sin_addr));
                     break;
                 }
             }
@@ -94,22 +115,25 @@ int main() {
                     getpeername(sd, (struct sockaddr*)&address, (socklen_t*)&addrlen);
                     close(sd);
                     client_socket[i] = 0;
-                    cout << "[System] Student disconnected." << endl;
+                    
+                    // Update Dashboard: Connection Removed
+                    dashboard.updateConnection(false);
                 } else {
                     Message msg;
+                    // We deserialize to get the raw message data
                     deserialize(buffer, &msg);
 
                     if (VerifyChecksum(msg) && msg.msgType == msgViolation) {
-                        time_t now = (time_t)msg.timestamp;
-                        char* dt = ctime(&now);
-                        if (dt) dt[strlen(dt) - 1] = '\0'; 
-
-                        // PRINT ALERT
-                        cout << "\n\033[1;31m[!!! VIOLATION ALERT !!!]\033[0m" << endl;
-                        cout << "Student ID : " << msg.studentID << endl;
-                        cout << "Website    : " << msg.data << endl;
-                        cout << "Time       : " << (dt ? dt : "Unknown") << endl;
-                        cout << "-------------------------" << endl;
+                        // Ensure null termination for the website string
+                        if (msg.dataLength < 512) msg.data[msg.dataLength] = '\0';
+                        string website(msg.data);
+                        
+                        // Update Dashboard: Violation Recorded
+                        dashboard.recordViolation(msg.studentID, website);
+                        
+                        // Force immediate render on violation? 
+                        // Optional, but user asked for 5 sec refresh. 
+                        // We stick to timer, but update log immediately if we wanted.
                     }
                 }
             }

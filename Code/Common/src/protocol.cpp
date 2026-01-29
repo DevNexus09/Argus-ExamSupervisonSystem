@@ -1,22 +1,46 @@
 #include "../include/protocol.h"
 #include <cstring>
 #include <arpa/inet.h>
+#include <vector>
 
 using namespace std;
 
-#define ENCRYPTION_KEY 0x5A
+// --- Improved Security: Stream Cipher Implementation ---
+// This acts like RC4. It generates a pseudo-random stream based on the key
+// and combines it with the data. 
 
-void EncryptXor(char* data, int length, char key) {
-    for (int i = 0; i < length; i++) {
-        data[i] ^= key;
+void RC4_Logic(char* data, int length, const string& key) {
+    // 1. Key Scheduling Algorithm (KSA)
+    vector<int> S(256);
+    for(int i=0; i<256; i++) S[i] = i;
+    
+    int j = 0;
+    for(int i=0; i<256; i++) {
+        j = (j + S[i] + key[i % key.length()]) % 256;
+        swap(S[i], S[j]);
+    }
+
+    // 2. Pseudo-Random Generation Algorithm (PRGA)
+    int i = 0;
+    j = 0;
+    for (int k = 0; k < length; k++) {
+        i = (i + 1) % 256;
+        j = (j + S[i]) % 256;
+        swap(S[i], S[j]);
+        
+        int rnd = S[(S[i] + S[j]) % 256];
+        data[k] ^= rnd; // XOR with the generated stream, not a static key
     }
 }
 
-void DecryptXor(char* data, int length, char key) {
-    for (int i = 0; i < length; i++) {
-        data[i] ^= key;
-    }
+void SecureEncrypt(char* data, int length, const string& key) {
+    RC4_Logic(data, length, key);
 }
+
+void SecureDecrypt(char* data, int length, const string& key) {
+    RC4_Logic(data, length, key); // Symmetric operation
+}
+// -------------------------------------------------------
 
 uint32_t CalculateChecksum(const Message& msg) {
     uint32_t sum = 0;
@@ -72,7 +96,9 @@ int serialize(const Message& msg, char* buffer) {
     int dataSize = msg.dataLength < 512 ? msg.dataLength : 512;
     memcpy(buffer + offset, msg.data, dataSize);
     
-    EncryptXor(buffer + offset, dataSize, ENCRYPTION_KEY);
+    // REPLACE EncryptXor WITH SecureEncrypt
+    SecureEncrypt(buffer + offset, dataSize, SECRET_KEY);
+    
     offset += dataSize;
     
     uint32_t chksum = htonl(msg.checksum);
@@ -108,7 +134,9 @@ int deserialize(const char* buffer, Message* msg) {
     int dataSize = msg->dataLength < 512 ? msg->dataLength : 512;
     memcpy(msg->data, buffer + offset, dataSize);
     
-    DecryptXor(msg->data, dataSize, ENCRYPTION_KEY);
+    // REPLACE DecryptXor WITH SecureDecrypt
+    SecureDecrypt(msg->data, dataSize, SECRET_KEY);
+    
     offset += dataSize;
     
     if (dataSize < 512) {
@@ -129,7 +157,6 @@ Message CreateMsg(uint8_t msgType, uint32_t studentID, uint32_t timestamp, const
     msg.studentID = studentID;
     msg.timestamp = timestamp;
     msg.dataLength = dataLength < 512 ? dataLength : 512;
-    
 
     memset(msg.data, 0, 512);
     if (data != nullptr && dataLength > 0) {

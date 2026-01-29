@@ -29,6 +29,10 @@ public:
     void updateConnection(bool connected, const std::string& ip = "");
     void recordViolation(uint32_t studentID, const std::string& website);
     
+    // New Feature Methods
+    void updateHeartbeat(uint32_t studentID);
+    void recordTampering(uint32_t studentID);
+    
     // Rendering
     void render();
     bool shouldRefresh(); // Checks if 5 seconds have passed

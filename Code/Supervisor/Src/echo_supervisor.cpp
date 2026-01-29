@@ -7,15 +7,15 @@
 #include <arpa/inet.h>
 #include <sys/select.h>
 #include <ctime>
-#include <map>      // Added for tracking violations
-#include <fstream>  // Added for file I/O
+#include <map>      
+#include <fstream>  
 #include "../../Common/include/protocol.h"
 #include "../include/dashboard.h" 
 
 using namespace std;
 
 #define PORT 8080
-#define MAX_CLIENTS 30
+#define MAX_CLIENTS 100 // Increased from 30 for better capacity
 #define REPORT_FILE "violation_report.txt"
 
 // Structure to hold student stats
@@ -38,7 +38,6 @@ void saveReport() {
                  << entry.second.totalViolations << endl;
         }
         file.close();
-        // Optional: cout << "[System] Violation report updated." << endl;
     } else {
         cerr << "[Error] Unable to write to " << REPORT_FILE << endl;
     }
@@ -129,7 +128,6 @@ int main() {
             for (int i = 0; i < MAX_CLIENTS; i++) {
                 if (client_socket[i] == 0) {
                     client_socket[i] = new_socket;
-                    // Update Dashboard: Connection Added
                     dashboard.updateConnection(true, inet_ntoa(address.sin_addr));
                     break;
                 }
@@ -145,33 +143,58 @@ int main() {
                     close(sd);
                     client_socket[i] = 0;
                     
-                    // Update Dashboard: Connection Removed
                     dashboard.updateConnection(false);
                 } else {
-                    Message msg;
-                    // We deserialize to get the raw message data
-                    deserialize(buffer, &msg);
-
-                    if (VerifyChecksum(msg) && msg.msgType == msgViolation) {
-                        // Ensure null termination for the website string
-                        if (msg.dataLength < 512) msg.data[msg.dataLength] = '\0';
-                        string website(msg.data);
+                    // Feature: Handle multiple messages in one packet (coalescing)
+                    int offset = 0;
+                    while (offset < valread) {
+                        Message msg;
+                        // deserialize returns bytes processed
+                        int bytesProcessed = deserialize(buffer + offset, &msg);
                         
-                        // --- NEW FEATURE IMPLEMENTATION ---
-                        // 1. Update In-Memory Records
-                        // Ensure null termination for student name (safety)
-                        msg.studentName[31] = '\0'; 
+                        // Prevent infinite loop if deserialize fails or returns 0
+                        if (bytesProcessed <= 0 || (offset + bytesProcessed > valread)) break;
+                        
+                        offset += bytesProcessed;
+
+                        if (!VerifyChecksum(msg)) {
+                            // Checksum failed, skip this message
+                            continue;
+                        }
+
+                        // Ensure Safety
+                        msg.studentName[31] = '\0';
+                        if (msg.dataLength < 512) msg.data[msg.dataLength] = '\0';
+                        
                         string sName(msg.studentName);
 
-                        violationRecords[msg.studentID].name = sName;
-                        violationRecords[msg.studentID].totalViolations++;
-
-                        // 2. Save to File
-                        saveReport();
-                        // ----------------------------------
-
-                        // Update Dashboard: Violation Recorded
-                        dashboard.recordViolation(msg.studentID, website);
+                        // --- FEATURE: Handle different message types ---
+                        switch (msg.msgType) {
+                            case msgViolation: {
+                                string website(msg.data);
+                                violationRecords[msg.studentID].name = sName;
+                                violationRecords[msg.studentID].totalViolations++;
+                                saveReport();
+                                dashboard.recordViolation(msg.studentID, website);
+                                break;
+                            }
+                            case msgHeartbeat: {
+                                // Just update dashboard log/status
+                                dashboard.updateHeartbeat(msg.studentID);
+                                break;
+                            }
+                            case msgTamper: {
+                                string alert(msg.data);
+                                violationRecords[msg.studentID].name = sName;
+                                // Tampering is serious, we count it
+                                violationRecords[msg.studentID].totalViolations++;
+                                saveReport();
+                                dashboard.recordTampering(msg.studentID);
+                                break;
+                            }
+                            default:
+                                break;
+                        }
                     }
                 }
             }

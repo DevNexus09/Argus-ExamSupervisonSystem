@@ -15,6 +15,7 @@
 #include <limits.h>
 #include <queue> 
 #include <ctime>
+#include <sstream>
 #include "../../Common/include/protocol.h"
 #include "../../Common/include/trie.h"
 
@@ -49,7 +50,7 @@ void signalHandler(int signum) {
 
 // --- Helper: Connection Management ---
 bool connectToServer() {
-    if (sock > 0) return true; // Already connected
+    if (sock > 0) return true;
 
     sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
@@ -75,7 +76,6 @@ bool connectToServer() {
 
 // --- Helper: Send or Queue Message ---
 void sendMessage(Message& msg) {
-    // Ensure checksum is calculated
     msg.checksum = CalculateChecksum(msg);
 
     bool sent = false;
@@ -83,7 +83,6 @@ void sendMessage(Message& msg) {
         char buffer[1024];
         serialize(msg, buffer);
         
-        // Using sizeof(Message) to match original protocol expectations
         if (send(sock, buffer, sizeof(Message), 0) >= 0) {
             sent = true;
         } else {
@@ -101,13 +100,12 @@ void sendMessage(Message& msg) {
 
 // --- Feature: Flush Offline Queue ---
 void processQueue() {
-    // Try to reconnect if disconnected
     if (sock == 0) {
-        if (!connectToServer()) return; // Still offline
+        if (!connectToServer()) return; 
     }
 
     while (!offlineQueue.empty()) {
-        if (sock == 0) break; // Lost connection while flushing
+        if (sock == 0) break; 
 
         Message msg = offlineQueue.front();
         char buffer[1024];
@@ -129,7 +127,6 @@ void processQueue() {
 void checkHeartbeat() {
     time_t now = time(0);
     if (difftime(now, lastHeartbeatTime) >= HEARTBEAT_INTERVAL) {
-        // Create and send heartbeat
         Message msg = CreateMsg(msgHeartbeat, currentStudentID, now, NULL, 0);
         sendMessage(msg);
         lastHeartbeatTime = now;
@@ -139,7 +136,6 @@ void checkHeartbeat() {
 // --- Feature: Anti-Tampering ---
 void checkTampering() {
     time_t now = time(0);
-    // If system time is earlier than the last check, time was moved backwards
     if (now < lastCheckTime) {
         cout << "[ALERT] System time manipulation detected!" << endl;
         string alertMsg = "System Time Moved Backwards";
@@ -149,13 +145,54 @@ void checkTampering() {
     lastCheckTime = now;
 }
 
+// --- Feature: Automatic Interface Selection (macOS & Linux) ---
+string findActiveInterface() {
+    // 1. Linux-specific routing check
+    ifstream routeFile("/proc/net/route");
+    if (routeFile.is_open()) {
+        string line;
+        getline(routeFile, line); 
+        while (getline(routeFile, line)) {
+            stringstream ss(line);
+            string iface, dest;
+            ss >> iface >> dest;
+            if (dest == "00000000") { 
+                routeFile.close();
+                return iface;
+            }
+        }
+        routeFile.close();
+    }
+
+    // 2. macOS / Generic Fallback: Use pcap_findalldevs
+    char errbuf[PCAP_ERRBUF_SIZE];
+    pcap_if_t *alldevs, *d;
+    string selected = "";
+
+    if (pcap_findalldevs(&alldevs, errbuf) != -1) {
+        for (d = alldevs; d; d = d->next) {
+            string name = d->name;
+            // Exclude loopback and common non-physical interfaces on macOS
+            if (name.find("lo") == string::npos && 
+                name.find("gif") == string::npos && 
+                name.find("stf") == string::npos &&
+                name.find("bridge") == string::npos) {
+                selected = name;
+                break;
+            }
+        }
+        pcap_freealldevs(alldevs);
+    }
+    return selected;
+}
+
 // --- Helper: Parse DNS Name ---
 string parseDNSName(const u_char* packet, int& offset) {
     string name = "";
     int len = packet[offset++];
     
     while (len != 0) {
-        if (len >= 192) { // Compression pointer
+        if (len >= 192) { 
             offset++; 
             return name; 
         }
@@ -202,10 +239,9 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
     int ip_header_offset = 14;
     struct ip *iph = (struct ip *)(packet + ip_header_offset);
     int ip_header_len = iph->ip_hl * 4;
-
     struct udphdr *udph = (struct udphdr *)(packet + ip_header_offset + ip_header_len);
     
-    if (ntohs(udph->uh_sport) != DNS_PORT && ntohs(udph->uh_dport) != DNS_PORT) return;
+    if (ntohs(udph->uh_dport) != DNS_PORT) return;
 
     int dns_offset = ip_header_offset + ip_header_len + 8;
     int query_offset = dns_offset + 12;
@@ -213,10 +249,8 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
 
     if (website.empty()) return;
 
-    // Check Violation
     if (!Search(&whitelistTrie, website)) {
         cout << "[UNAUTHORIZED] " << website << " detected!" << endl;
-        
         Message msg;
         msg.msgType = msgViolation;
         msg.studentID = currentStudentID;
@@ -224,8 +258,6 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
         msg.timestamp = time(0); 
         strncpy(msg.data, website.c_str(), sizeof(msg.data) - 1);
         msg.dataLength = website.length();
-        
-        // Use new send function with queue support
         sendMessage(msg);
     }
 }
@@ -240,53 +272,22 @@ int main() {
     cin.ignore();
     cin.getline(currentStudentName, 32);
 
-    // 1. Initial Connect
     connectToServer();
-
-    // 2. Load Whitelist
     loadWhitelist();
 
-    // Initialize Timers
     lastHeartbeatTime = time(0);
     lastCheckTime = time(0);
 
-    // 3. Select Interface
+    // Automatic Interface Selection
+    string dev = findActiveInterface();
+    if (dev.empty()) {
+        cerr << "[Error] No active network interface found." << endl;
+        if (sock > 0) close(sock);
+        return 1;
+    }
+    cout << "[System] Auto-selected interface: " << dev << endl;
+
     char errbuf[PCAP_ERRBUF_SIZE];
-    pcap_if_t *alldevs, *d;
-    
-    if (pcap_findalldevs(&alldevs, errbuf) == -1) {
-        cerr << "Error finding devices: " << errbuf << endl;
-        return 1;
-    }
-
-    cout << "\nAvailable Interfaces:" << endl;
-    int i = 0;
-    for (d = alldevs; d; d = d->next) {
-        cout << ++i << ". " << d->name;
-        if (d->description) cout << " (" << d->description << ")";
-        cout << endl;
-    }
-
-    if (i == 0) {
-        cout << "No interfaces found! (Did you run with sudo?)" << endl;
-        return 1;
-    }
-
-    int choice;
-    cout << "Select Interface (Recommended: 'lo0' for test, 'en0' for wifi): ";
-    cin >> choice;
-
-    if (choice < 1 || choice > i) return 1;
-
-    d = alldevs;
-    for (int j = 1; j < choice; j++) d = d->next;
-    
-    string dev = d->name;
-    cout << "Selected device: " << dev << endl;
-    pcap_freealldevs(alldevs);
-
-    // 4. Open PCAP
-    // 1000ms timeout is important for the main loop to tick
     handle = pcap_open_live(dev.c_str(), 65536, 1, 1000, errbuf);
     if (handle == NULL) {
         cerr << "Couldn't open device: " << errbuf << endl;
@@ -300,12 +301,9 @@ int main() {
 
     cout << "[System] Monitoring DNS traffic..." << endl;
     
-    // Main Loop (Replaced pcap_loop for periodic tasks)
     while (running) {
         struct pcap_pkthdr *header;
         const u_char *pkt_data;
-        
-        // pcap_next_ex returns: 1 (packet), 0 (timeout), -1 (error), -2 (break)
         int res = pcap_next_ex(handle, &header, &pkt_data);
         
         if (res == 1) {
@@ -314,10 +312,9 @@ int main() {
             cerr << "Error reading packet: " << pcap_geterr(handle) << endl;
             break;
         } else if (res == -2) {
-            break; // Loop broken
+            break; 
         }
         
-        // Periodic Tasks
         checkHeartbeat();
         checkTampering();
         processQueue();

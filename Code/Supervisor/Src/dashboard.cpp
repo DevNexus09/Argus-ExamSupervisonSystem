@@ -31,29 +31,22 @@ void Dashboard::updateConnection(bool connected, const string& ip) {
 void Dashboard::recordViolation(uint32_t studentID, const string& website) {
     totalViolations++;
     
-    // Update Student Stats
     string idStr = to_string(studentID);
     studentViolationCounts[idStr]++;
     
-    // Insert/Update in PriorityQueue
     Insert(studentPQ, idStr, studentViolationCounts[idStr]);
 
-    // Update Website Stats
     websiteViolationCounts[website]++;
 
     latestLog = "Violation detected: Student " + idStr + " on " + website;
 }
 
-// --- Feature: Heartbeat Logging ---
 void Dashboard::updateHeartbeat(uint32_t studentID) {
-    // We don't spam the log, just maybe update internally or show occasionally
-    // For now, we update the log to show activity
     latestLog = "Heartbeat received from Student " + to_string(studentID);
 }
 
-// --- Feature: Tampering Alert ---
 void Dashboard::recordTampering(uint32_t studentID) {
-    totalViolations++; // Count tampering as a violation
+    totalViolations++;
     
     string idStr = to_string(studentID);
     studentViolationCounts[idStr]++;
@@ -72,19 +65,16 @@ bool Dashboard::shouldRefresh() {
 }
 
 void Dashboard::render() {
-    // Clear screen and move cursor to top-left
     cout << "\033[2J\033[1;1H";
 
     cout << "==============================================================" << endl;
     cout << "                  ARGUS SUPERVISOR DASHBOARD                  " << endl;
     cout << "==============================================================" << endl;
     
-    // General Stats
     cout << left << setw(30) << "Active Connections:" << activeConnections << endl;
     cout << left << setw(30) << "Total Violations:" << totalViolations << endl;
     cout << "--------------------------------------------------------------" << endl;
 
-    // Top 10 Violators
     cout << "\n [TOP 10 VIOLATORS]" << endl;
     cout << left << setw(10) << "Rank" << setw(20) << "Student ID" << setw(15) << "Violations" << endl;
     cout << "--------------------------------------------------------------" << endl;
@@ -100,15 +90,13 @@ void Dashboard::render() {
         }
     }
 
-    // Top 5 Violation Websites
     cout << "\n [TOP 5 RESTRICTED SITES ACCESSED]" << endl;
     cout << left << setw(10) << "Rank" << setw(35) << "Website" << setw(10) << "Count" << endl;
     cout << "--------------------------------------------------------------" << endl;
 
-    // Convert map to vector for sorting
     vector<pair<string, int>> sites(websiteViolationCounts.begin(), websiteViolationCounts.end());
     sort(sites.begin(), sites.end(), [](const pair<string, int>& a, const pair<string, int>& b) {
-        return a.second > b.second; // Descending order
+        return a.second > b.second;
     });
 
     int limit = min((int)sites.size(), 5);

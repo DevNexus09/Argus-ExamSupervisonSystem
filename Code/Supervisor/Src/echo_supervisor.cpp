@@ -15,19 +15,16 @@
 using namespace std;
 
 #define PORT 8080
-#define MAX_CLIENTS 100 // Increased from 30 for better capacity
+#define MAX_CLIENTS 100
 #define REPORT_FILE "violation_report.txt"
 
-// Structure to hold student stats
 struct StudentStats {
     string name;
     int totalViolations;
 };
 
-// Map to store stats by Student ID
 map<uint32_t, StudentStats> violationRecords;
 
-// Function to save the report to a text file
 void saveReport() {
     ofstream file(REPORT_FILE);
     if (file.is_open()) {
@@ -44,10 +41,8 @@ void saveReport() {
 }
 
 int main() {
-    // Initialize Dashboard
     Dashboard dashboard;
 
-    // 1. Setup Connection
     int master_socket, new_socket, client_socket[MAX_CLIENTS], max_sd, sd, valread;
     struct sockaddr_in address;
     char buffer[1025]; 
@@ -59,7 +54,6 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    // Force reuse of port
     int opt = 1;
     if (setsockopt(master_socket, SOL_SOCKET, SO_REUSEADDR, (char *)&opt, sizeof(opt)) < 0) {
         perror("setsockopt");
@@ -83,10 +77,8 @@ int main() {
     fd_set readfds;
     int addrlen = sizeof(address);
 
-    // Initial render
     dashboard.render();
 
-    // 2. Main Loop
     while (true) {
         FD_ZERO(&readfds);
         FD_SET(master_socket, &readfds);
@@ -98,14 +90,12 @@ int main() {
             if (sd > max_sd) max_sd = sd;
         }
 
-        // Timeout for select (1 second) to allow non-blocking dashboard refresh
         struct timeval tv;
         tv.tv_sec = 1;
         tv.tv_usec = 0;
 
         int activity = select(max_sd + 1, &readfds, NULL, NULL, &tv);
 
-        // Check dashboard refresh timer
         if (dashboard.shouldRefresh()) {
             dashboard.render();
         }
@@ -114,17 +104,14 @@ int main() {
             perror("select error");
         }
         
-        // If timeout occurred (activity == 0), just continue loop to check timer again
         if (activity == 0) continue;
 
-        // New Connection
         if (FD_ISSET(master_socket, &readfds)) {
             if ((new_socket = accept(master_socket, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0) {
                 perror("accept");
                 exit(EXIT_FAILURE);
             }
             
-            // Add to list
             for (int i = 0; i < MAX_CLIENTS; i++) {
                 if (client_socket[i] == 0) {
                     client_socket[i] = new_socket;
@@ -134,7 +121,6 @@ int main() {
             }
         }
 
-        // IO Operation on Clients
         for (int i = 0; i < MAX_CLIENTS; i++) {
             sd = client_socket[i];
             if (FD_ISSET(sd, &readfds)) {
@@ -145,30 +131,24 @@ int main() {
                     
                     dashboard.updateConnection(false);
                 } else {
-                    // Feature: Handle multiple messages in one packet (coalescing)
                     int offset = 0;
                     while (offset < valread) {
                         Message msg;
-                        // deserialize returns bytes processed
                         int bytesProcessed = deserialize(buffer + offset, &msg);
                         
-                        // Prevent infinite loop if deserialize fails or returns 0
                         if (bytesProcessed <= 0 || (offset + bytesProcessed > valread)) break;
                         
                         offset += bytesProcessed;
 
                         if (!VerifyChecksum(msg)) {
-                            // Checksum failed, skip this message
                             continue;
                         }
 
-                        // Ensure Safety
                         msg.studentName[31] = '\0';
                         if (msg.dataLength < 512) msg.data[msg.dataLength] = '\0';
                         
                         string sName(msg.studentName);
 
-                        // --- FEATURE: Handle different message types ---
                         switch (msg.msgType) {
                             case msgViolation: {
                                 string website(msg.data);
@@ -179,14 +159,12 @@ int main() {
                                 break;
                             }
                             case msgHeartbeat: {
-                                // Just update dashboard log/status
                                 dashboard.updateHeartbeat(msg.studentID);
                                 break;
                             }
                             case msgTamper: {
                                 string alert(msg.data);
                                 violationRecords[msg.studentID].name = sName;
-                                // Tampering is serious, we count it
                                 violationRecords[msg.studentID].totalViolations++;
                                 saveReport();
                                 dashboard.recordTampering(msg.studentID);

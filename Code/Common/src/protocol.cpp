@@ -5,12 +5,7 @@
 
 using namespace std;
 
-// --- Improved Security: Stream Cipher Implementation ---
-// This acts like RC4. It generates a pseudo-random stream based on the key
-// and combines it with the data. 
-
 void RC4_Logic(char* data, int length, const string& key) {
-    // 1. Key Scheduling Algorithm (KSA)
     vector<int> S(256);
     for(int i=0; i<256; i++) S[i] = i;
     
@@ -20,7 +15,7 @@ void RC4_Logic(char* data, int length, const string& key) {
         swap(S[i], S[j]);
     }
 
-    // 2. Pseudo-Random Generation Algorithm (PRGA)
+    
     int i = 0;
     j = 0;
     for (int k = 0; k < length; k++) {
@@ -29,7 +24,7 @@ void RC4_Logic(char* data, int length, const string& key) {
         swap(S[i], S[j]);
         
         int rnd = S[(S[i] + S[j]) % 256];
-        data[k] ^= rnd; // XOR with the generated stream, not a static key
+        data[k] ^= rnd;
     }
 }
 
@@ -38,9 +33,8 @@ void SecureEncrypt(char* data, int length, const string& key) {
 }
 
 void SecureDecrypt(char* data, int length, const string& key) {
-    RC4_Logic(data, length, key); // Symmetric operation
+    RC4_Logic(data, length, key);
 }
-// -------------------------------------------------------
 
 uint32_t CalculateChecksum(const Message& msg) {
     uint32_t sum = 0;
@@ -96,7 +90,6 @@ int serialize(const Message& msg, char* buffer) {
     int dataSize = msg.dataLength < 512 ? msg.dataLength : 512;
     memcpy(buffer + offset, msg.data, dataSize);
     
-    // REPLACE EncryptXor WITH SecureEncrypt
     SecureEncrypt(buffer + offset, dataSize, SECRET_KEY);
     
     offset += dataSize;
@@ -133,8 +126,7 @@ int deserialize(const char* buffer, Message* msg) {
     
     int dataSize = msg->dataLength < 512 ? msg->dataLength : 512;
     memcpy(msg->data, buffer + offset, dataSize);
-    
-    // REPLACE DecryptXor WITH SecureDecrypt
+
     SecureDecrypt(msg->data, dataSize, SECRET_KEY);
     
     offset += dataSize;

@@ -55,7 +55,6 @@ void heapify(PriorityQueue* pq) {
     }
 }
 
-// CHANGED: 'insert' to 'Insert' to match header declaration
 void Insert(PriorityQueue* pq, const string& student_id, int count) {
     for (int i = 0; i < pq->size; i++) {
         if (pq->heap[i].studentID == student_id) {

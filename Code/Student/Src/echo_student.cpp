@@ -21,34 +21,28 @@
 
 using namespace std;
 
-// --- Config ---
 #define SERVER_IP "127.0.0.1"
 #define PORT 8080
 #define DNS_PORT 53
 #define WHITELIST_PATH "../config/whitelist.txt" 
 #define HEARTBEAT_INTERVAL 30
 
-// --- Globals ---
 int sock = 0;
 pcap_t *handle = nullptr;
 uint32_t currentStudentID = 0;
 char currentStudentName[32];
 Trie whitelistTrie;
 bool running = true;
-
-// Feature Globals
 queue<Message> offlineQueue;
 time_t lastHeartbeatTime = 0;
 time_t lastCheckTime = 0;
 
-// --- Helper: Clean Exit ---
 void signalHandler(int signum) {
     cout << "\n[System] Stopping Student Client..." << endl;
     running = false;
     if (handle) pcap_breakloop(handle);
 }
 
-// --- Helper: Connection Management ---
 bool connectToServer() {
     if (sock > 0) return true;
 
@@ -74,7 +68,6 @@ bool connectToServer() {
     return true;
 }
 
-// --- Helper: Send or Queue Message ---
 void sendMessage(Message& msg) {
     msg.checksum = CalculateChecksum(msg);
 
@@ -98,10 +91,9 @@ void sendMessage(Message& msg) {
     }
 }
 
-// --- Feature: Flush Offline Queue ---
 void processQueue() {
     if (sock == 0) {
-        if (!connectToServer()) return; 
+        if (!connectToServer()) return;
     }
 
     while (!offlineQueue.empty()) {
@@ -123,7 +115,6 @@ void processQueue() {
     }
 }
 
-// --- Feature: Heartbeat ---
 void checkHeartbeat() {
     time_t now = time(0);
     if (difftime(now, lastHeartbeatTime) >= HEARTBEAT_INTERVAL) {
@@ -133,7 +124,6 @@ void checkHeartbeat() {
     }
 }
 
-// --- Feature: Anti-Tampering ---
 void checkTampering() {
     time_t now = time(0);
     if (now < lastCheckTime) {
@@ -145,18 +135,16 @@ void checkTampering() {
     lastCheckTime = now;
 }
 
-// --- Feature: Automatic Interface Selection (macOS & Linux) ---
 string findActiveInterface() {
-    // 1. Linux-specific routing check
     ifstream routeFile("/proc/net/route");
     if (routeFile.is_open()) {
         string line;
-        getline(routeFile, line); 
+        getline(routeFile, line);
         while (getline(routeFile, line)) {
             stringstream ss(line);
             string iface, dest;
             ss >> iface >> dest;
-            if (dest == "00000000") { 
+            if (dest == "00000000") {
                 routeFile.close();
                 return iface;
             }
@@ -164,7 +152,6 @@ string findActiveInterface() {
         routeFile.close();
     }
 
-    // 2. macOS / Generic Fallback: Use pcap_findalldevs
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_if_t *alldevs, *d;
     string selected = "";
@@ -172,7 +159,6 @@ string findActiveInterface() {
     if (pcap_findalldevs(&alldevs, errbuf) != -1) {
         for (d = alldevs; d; d = d->next) {
             string name = d->name;
-            // Exclude loopback and common non-physical interfaces on macOS
             if (name.find("lo") == string::npos && 
                 name.find("gif") == string::npos && 
                 name.find("stf") == string::npos &&
@@ -186,15 +172,14 @@ string findActiveInterface() {
     return selected;
 }
 
-// --- Helper: Parse DNS Name ---
 string parseDNSName(const u_char* packet, int& offset) {
     string name = "";
     int len = packet[offset++];
     
     while (len != 0) {
-        if (len >= 192) { 
-            offset++; 
-            return name; 
+        if (len >= 192) {
+            offset++;
+            return name;
         }
         for (int i = 0; i < len; i++) {
             name += (char)packet[offset++];
@@ -205,7 +190,6 @@ string parseDNSName(const u_char* packet, int& offset) {
     return name;
 }
 
-// --- Helper: Trim String ---
 string trim(const string& str) {
     size_t first = str.find_first_not_of(" \t\r\n");
     if (string::npos == first) return "";
@@ -213,7 +197,6 @@ string trim(const string& str) {
     return str.substr(first, (last - first + 1));
 }
 
-// --- Helper: Load Whitelist ---
 void loadWhitelist() {
     ifstream file(WHITELIST_PATH);
     if (!file.is_open()) {
@@ -234,7 +217,6 @@ void loadWhitelist() {
     cout << "[System] Whitelist loaded (" << count << " entries)." << endl;
 }
 
-// --- Packet Handler Logic ---
 void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
     int ip_header_offset = 14;
     struct ip *iph = (struct ip *)(packet + ip_header_offset);
@@ -278,7 +260,6 @@ int main() {
     lastHeartbeatTime = time(0);
     lastCheckTime = time(0);
 
-    // Automatic Interface Selection
     string dev = findActiveInterface();
     if (dev.empty()) {
         cerr << "[Error] No active network interface found." << endl;
@@ -312,7 +293,7 @@ int main() {
             cerr << "Error reading packet: " << pcap_geterr(handle) << endl;
             break;
         } else if (res == -2) {
-            break; 
+            break;
         }
         
         checkHeartbeat();

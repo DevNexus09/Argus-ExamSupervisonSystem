@@ -13,7 +13,7 @@
 #include <netinet/ip.h>
 #include <netinet/udp.h>
 #include <limits.h>
-#include <queue> 
+#include <map> 
 #include <ctime>
 #include <sstream>
 #include "../../Common/include/protocol.h"
@@ -21,21 +21,42 @@
 
 using namespace std;
 
+// --- Config ---
 #define SERVER_IP "127.0.0.1"
 #define PORT 8080
 #define DNS_PORT 53
 #define WHITELIST_PATH "../config/whitelist.txt" 
 #define HEARTBEAT_INTERVAL 30
 
+// --- Globals ---
 int sock = 0;
 pcap_t *handle = nullptr;
 uint32_t currentStudentID = 0;
 char currentStudentName[32];
 Trie whitelistTrie;
 bool running = true;
-queue<Message> offlineQueue;
+
+// Reliability Globals
+map<uint32_t, pair<Message, time_t>> pendingACKs; 
+uint32_t globalSequenceNum = 0;
 time_t lastHeartbeatTime = 0;
 time_t lastCheckTime = 0;
+
+// --- FORWARD DECLARATIONS (Fixes "Not Defined" Errors) ---
+void signalHandler(int signum);
+bool connectToServer();
+void sendMessage(Message& msg);
+void handleIncomingACKs();
+void processPendingMessages();
+void checkHeartbeat();
+void checkTampering();
+string findActiveInterface();
+string parseDNSName(const u_char* packet, int& offset);
+string trim(const string& str);
+void loadWhitelist();
+void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet);
+
+// --- Implementations ---
 
 void signalHandler(int signum) {
     cout << "\n[System] Stopping Student Client..." << endl;
@@ -69,48 +90,65 @@ bool connectToServer() {
 }
 
 void sendMessage(Message& msg) {
+    if (msg.sequenceNumber == 0) {
+        msg.sequenceNumber = ++globalSequenceNum;
+    }
     msg.checksum = CalculateChecksum(msg);
 
-    bool sent = false;
+    if (msg.msgType == msgViolation || msg.msgType == msgTamper) {
+        pendingACKs[msg.sequenceNumber] = make_pair(msg, time(0));
+    }
+
     if (sock > 0) {
         char buffer[1024];
-        serialize(msg, buffer);
+        int msgSize = serialize(msg, buffer); // Capture exact size
         
-        if (send(sock, buffer, sizeof(Message), 0) >= 0) {
-            sent = true;
-        } else {
+        // FIX: Send 'msgSize', not 'sizeof(Message)'
+        if (send(sock, buffer, msgSize, 0) < 0) { 
             cout << "[Error] Send failed. Connection lost." << endl;
             close(sock);
             sock = 0;
         }
-    }
-
-    if (!sent) {
-        cout << "[System] Offline. Message queued." << endl;
-        offlineQueue.push(msg);
+    } else {
+        cout << "[System] Offline. Message queued (Seq: " << msg.sequenceNumber << ")." << endl;
     }
 }
 
-void processQueue() {
+void handleIncomingACKs() {
+    if (sock <= 0) return;
+    
+    char buffer[1024];
+    int len = recv(sock, buffer, 1024, MSG_DONTWAIT);
+    
+    if (len > 0) {
+        Message msg;
+        deserialize(buffer, &msg);
+        if (msg.msgType == msgACK) {
+            cout << "[System] ACK Received for Msg #" << msg.sequenceNumber << endl;
+            pendingACKs.erase(msg.sequenceNumber);
+        }
+    }
+}
+
+void processPendingMessages() {
     if (sock == 0) {
-        if (!connectToServer()) return;
+        if (!connectToServer()) return; 
     }
 
-    while (!offlineQueue.empty()) {
-        if (sock == 0) break; 
-
-        Message msg = offlineQueue.front();
-        char buffer[1024];
-        serialize(msg, buffer);
-
-        if (send(sock, buffer, sizeof(Message), 0) < 0) {
-             cout << "[Error] Send failed during flush. Stopping." << endl;
-             close(sock);
-             sock = 0;
-             break;
-        } else {
-            cout << "[Queue] Sent buffered message." << endl;
-            offlineQueue.pop();
+    time_t now = time(0);
+    for (auto it = pendingACKs.begin(); it != pendingACKs.end(); ++it) {
+        if (difftime(now, it->second.second) >= 5) {
+            cout << "[Retry] Resending Msg #" << it->first << "..." << endl;
+            
+            char buffer[1024];
+            int msgSize = serialize(it->second.first, buffer); // Capture exact size
+            
+            if (send(sock, buffer, msgSize, 0) < 0) {
+                close(sock); sock = 0;
+                break;
+            }
+            
+            it->second.second = now; 
         }
     }
 }
@@ -118,7 +156,7 @@ void processQueue() {
 void checkHeartbeat() {
     time_t now = time(0);
     if (difftime(now, lastHeartbeatTime) >= HEARTBEAT_INTERVAL) {
-        Message msg = CreateMsg(msgHeartbeat, currentStudentID, now, NULL, 0);
+        Message msg = CreateMsg(msgHeartbeat, currentStudentID, now, 0, NULL, 0);
         sendMessage(msg);
         lastHeartbeatTime = now;
     }
@@ -129,13 +167,14 @@ void checkTampering() {
     if (now < lastCheckTime) {
         cout << "[ALERT] System time manipulation detected!" << endl;
         string alertMsg = "System Time Moved Backwards";
-        Message msg = CreateMsg(msgTamper, currentStudentID, now, alertMsg.c_str(), alertMsg.length());
+        Message msg = CreateMsg(msgTamper, currentStudentID, now, 0, alertMsg.c_str(), alertMsg.length());
         sendMessage(msg);
     }
     lastCheckTime = now;
 }
 
 string findActiveInterface() {
+    // 1. Linux Check (Keep this for lab compatibility)
     ifstream routeFile("/proc/net/route");
     if (routeFile.is_open()) {
         string line;
@@ -152,19 +191,36 @@ string findActiveInterface() {
         routeFile.close();
     }
 
+    // 2. macOS / Generic Fallback
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_if_t *alldevs, *d;
     string selected = "";
+    bool foundPreferred = false;
 
     if (pcap_findalldevs(&alldevs, errbuf) != -1) {
+        // PASS 1: Priority check for 'en0' (Standard Wi-Fi)
         for (d = alldevs; d; d = d->next) {
-            string name = d->name;
-            if (name.find("lo") == string::npos && 
-                name.find("gif") == string::npos && 
-                name.find("stf") == string::npos &&
-                name.find("bridge") == string::npos) {
-                selected = name;
+            if (string(d->name) == "en0") {
+                selected = "en0";
+                foundPreferred = true;
                 break;
+            }
+        }
+
+        // PASS 2: If en0 is missing, find first valid non-virtual interface
+        if (!foundPreferred) {
+            for (d = alldevs; d; d = d->next) {
+                string name = d->name;
+                // Exclude: Loopback (lo), Bridge, P2P, VPN (utun), Access Point (ap), Apple Wireless (awdl)
+                if (name.find("lo") == string::npos && 
+                    name.find("bridge") == string::npos && 
+                    name.find("p2p") == string::npos && 
+                    name.find("utun") == string::npos &&
+                    name.find("ap") == string::npos &&    // NEW: Ignore Virtual Access Points
+                    name.find("awdl") == string::npos) {  // NEW: Ignore AirDrop/Direct Link
+                    selected = name;
+                    break;
+                }
             }
         }
         pcap_freealldevs(alldevs);
@@ -223,7 +279,12 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
     int ip_header_len = iph->ip_hl * 4;
     struct udphdr *udph = (struct udphdr *)(packet + ip_header_offset + ip_header_len);
     
-    if (ntohs(udph->uh_dport) != DNS_PORT) return;
+    // Cross-platform compatibility for UDP header
+    #ifdef __APPLE__
+        if (ntohs(udph->uh_dport) != DNS_PORT) return;
+    #else
+        if (ntohs(udph->dest) != DNS_PORT) return;
+    #endif
 
     int dns_offset = ip_header_offset + ip_header_len + 8;
     int query_offset = dns_offset + 12;
@@ -238,6 +299,7 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
         msg.studentID = currentStudentID;
         strncpy(msg.studentName, currentStudentName, 31);
         msg.timestamp = time(0); 
+        msg.sequenceNumber = 0; 
         strncpy(msg.data, website.c_str(), sizeof(msg.data) - 1);
         msg.dataLength = website.length();
         sendMessage(msg);
@@ -262,7 +324,7 @@ int main() {
 
     string dev = findActiveInterface();
     if (dev.empty()) {
-        cerr << "[Error] No active network interface found." << endl;
+        cerr << "[Error] No active network interface found. (Try running with sudo)" << endl;
         if (sock > 0) close(sock);
         return 1;
     }
@@ -296,9 +358,10 @@ int main() {
             break;
         }
         
+        handleIncomingACKs();
         checkHeartbeat();
         checkTampering();
-        processQueue();
+        processPendingMessages();
     }
 
     pcap_close(handle);

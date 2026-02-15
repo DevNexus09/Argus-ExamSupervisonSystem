@@ -35,14 +35,11 @@ void saveReport() {
                  << entry.second.totalViolations << endl;
         }
         file.close();
-    } else {
-        cerr << "[Error] Unable to write to " << REPORT_FILE << endl;
     }
 }
 
 int main() {
     Dashboard dashboard;
-
     int master_socket, new_socket, client_socket[MAX_CLIENTS], max_sd, sd, valread;
     struct sockaddr_in address;
     char buffer[1025]; 
@@ -65,7 +62,7 @@ int main() {
     address.sin_port = htons(PORT);
 
     if (::bind(master_socket, (struct sockaddr *)&address, sizeof(address)) < 0) {
-        perror("Bind failed (Port 8080 might be busy)");
+        perror("Bind failed");
         exit(EXIT_FAILURE);
     }
 
@@ -96,14 +93,9 @@ int main() {
 
         int activity = select(max_sd + 1, &readfds, NULL, NULL, &tv);
 
-        if (dashboard.shouldRefresh()) {
-            dashboard.render();
-        }
-
-        if ((activity < 0) && (errno != EINTR)) {
-            perror("select error");
-        }
+        if (dashboard.shouldRefresh()) dashboard.render();
         
+        if (activity < 0 && errno != EINTR) perror("select error");
         if (activity == 0) continue;
 
         if (FD_ISSET(master_socket, &readfds)) {
@@ -111,7 +103,6 @@ int main() {
                 perror("accept");
                 exit(EXIT_FAILURE);
             }
-            
             for (int i = 0; i < MAX_CLIENTS; i++) {
                 if (client_socket[i] == 0) {
                     client_socket[i] = new_socket;
@@ -125,30 +116,29 @@ int main() {
             sd = client_socket[i];
             if (FD_ISSET(sd, &readfds)) {
                 if ((valread = read(sd, buffer, 1024)) == 0) {
-                    getpeername(sd, (struct sockaddr*)&address, (socklen_t*)&addrlen);
                     close(sd);
                     client_socket[i] = 0;
-                    
                     dashboard.updateConnection(false);
                 } else {
                     int offset = 0;
                     while (offset < valread) {
                         Message msg;
                         int bytesProcessed = deserialize(buffer + offset, &msg);
-                        
                         if (bytesProcessed <= 0 || (offset + bytesProcessed > valread)) break;
                         
                         offset += bytesProcessed;
 
                         if (!VerifyChecksum(msg)) {
+                            // DEBUGGING LINE: UNCOMMENT IF STILL FAILING
+                            // cerr << "[DEBUG] Checksum Failed! MsgType: " << (int)msg.msgType << endl;
                             continue;
                         }
 
                         msg.studentName[31] = '\0';
                         if (msg.dataLength < 512) msg.data[msg.dataLength] = '\0';
-                        
                         string sName(msg.studentName);
 
+                        bool sendAck = false;
                         switch (msg.msgType) {
                             case msgViolation: {
                                 string website(msg.data);
@@ -156,6 +146,7 @@ int main() {
                                 violationRecords[msg.studentID].totalViolations++;
                                 saveReport();
                                 dashboard.recordViolation(msg.studentID, website);
+                                sendAck = true;
                                 break;
                             }
                             case msgHeartbeat: {
@@ -168,10 +159,16 @@ int main() {
                                 violationRecords[msg.studentID].totalViolations++;
                                 saveReport();
                                 dashboard.recordTampering(msg.studentID);
+                                sendAck = true;
                                 break;
                             }
-                            default:
-                                break;
+                        }
+
+                        if (sendAck) {
+                            Message ackMsg = CreateMsg(msgACK, msg.studentID, time(0), msg.sequenceNumber, NULL, 0);
+                            char ackBuffer[1024];
+                            int ackSize = serialize(ackMsg, ackBuffer);
+                            send(sd, ackBuffer, ackSize, 0);
                         }
                     }
                 }

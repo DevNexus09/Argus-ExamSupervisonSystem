@@ -5,6 +5,7 @@
 
 using namespace std;
 
+// --- Encryption Logic (RC4) ---
 void RC4_Logic(char* data, int length, const string& key) {
     vector<int> S(256);
     for(int i=0; i<256; i++) S[i] = i;
@@ -15,14 +16,11 @@ void RC4_Logic(char* data, int length, const string& key) {
         swap(S[i], S[j]);
     }
 
-    
-    int i = 0;
-    j = 0;
+    int i = 0; j = 0;
     for (int k = 0; k < length; k++) {
         i = (i + 1) % 256;
         j = (j + S[i]) % 256;
         swap(S[i], S[j]);
-        
         int rnd = S[(S[i] + S[j]) % 256];
         data[k] ^= rnd;
     }
@@ -36,6 +34,7 @@ void SecureDecrypt(char* data, int length, const string& key) {
     RC4_Logic(data, length, key);
 }
 
+// --- Checksum Logic ---
 uint32_t CalculateChecksum(const Message& msg) {
     uint32_t sum = 0;
     sum += msg.msgType;
@@ -49,6 +48,12 @@ uint32_t CalculateChecksum(const Message& msg) {
     sum += (msg.timestamp >> 16) & 0xFF;
     sum += (msg.timestamp >> 8) & 0xFF;
     sum += msg.timestamp & 0xFF;
+
+    // NEW: Include Sequence Number
+    sum += (msg.sequenceNumber >> 24) & 0xFF;
+    sum += (msg.sequenceNumber >> 16) & 0xFF;
+    sum += (msg.sequenceNumber >> 8) & 0xFF;
+    sum += msg.sequenceNumber & 0xFF;
     
     sum += (msg.dataLength >> 8) & 0xFF;
     sum += msg.dataLength & 0xFF;
@@ -63,10 +68,10 @@ uint32_t CalculateChecksum(const Message& msg) {
 }
 
 bool VerifyChecksum(const Message& msg) {
-    uint32_t calculated = CalculateChecksum(msg);
-    return calculated == msg.checksum;
+    return CalculateChecksum(msg) == msg.checksum;
 }
 
+// --- Serialization ---
 int serialize(const Message& msg, char* buffer) {
     int offset = 0;
     
@@ -81,6 +86,11 @@ int serialize(const Message& msg, char* buffer) {
 
     uint32_t timestp = htonl(msg.timestamp);
     memcpy(buffer + offset, &timestp, sizeof(uint32_t));
+    offset += sizeof(uint32_t);
+
+    // Serialize Sequence Number
+    uint32_t seq = htonl(msg.sequenceNumber);
+    memcpy(buffer + offset, &seq, sizeof(uint32_t));
     offset += sizeof(uint32_t);
     
     uint16_t dataLen = htons(msg.dataLength);
@@ -98,7 +108,7 @@ int serialize(const Message& msg, char* buffer) {
     memcpy(buffer + offset, &chksum, sizeof(uint32_t));
     offset += sizeof(uint32_t);
     
-    return offset;
+    return offset; // Return EXACT size
 }
 
 int deserialize(const char* buffer, Message* msg) {
@@ -117,6 +127,12 @@ int deserialize(const char* buffer, Message* msg) {
     uint32_t timestp;
     memcpy(&timestp, buffer + offset, sizeof(uint32_t));
     msg->timestamp = ntohl(timestp);
+    offset += sizeof(uint32_t);
+
+    // Deserialize Sequence Number
+    uint32_t seq;
+    memcpy(&seq, buffer + offset, sizeof(uint32_t));
+    msg->sequenceNumber = ntohl(seq);
     offset += sizeof(uint32_t);
 
     uint16_t dataLen;
@@ -143,11 +159,13 @@ int deserialize(const char* buffer, Message* msg) {
     return offset;
 }
 
-Message CreateMsg(uint8_t msgType, uint32_t studentID, uint32_t timestamp, const char* data, uint16_t dataLength) {
+Message CreateMsg(uint8_t msgType, uint32_t studentID, uint32_t timestamp, 
+                  uint32_t sequenceNumber, const char* data, uint16_t dataLength) {
     Message msg;
     msg.msgType = msgType;
     msg.studentID = studentID;
     msg.timestamp = timestamp;
+    msg.sequenceNumber = sequenceNumber;
     msg.dataLength = dataLength < 512 ? dataLength : 512;
 
     memset(msg.data, 0, 512);

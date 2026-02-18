@@ -129,8 +129,6 @@ int main() {
                         offset += bytesProcessed;
 
                         if (!VerifyChecksum(msg)) {
-                            // DEBUGGING LINE: UNCOMMENT IF STILL FAILING
-                            // cerr << "[DEBUG] Checksum Failed! MsgType: " << (int)msg.msgType << endl;
                             continue;
                         }
 
@@ -160,6 +158,19 @@ int main() {
                                 saveReport();
                                 dashboard.recordTampering(msg.studentID);
                                 sendAck = true;
+                                break;
+                            }
+                            // NEW: Handle Time Synchronization Request
+                            case msgTimeRequest: {
+                                time_t serverTime = time(0);
+                                string timeStr = to_string(serverTime);
+                                
+                                // Create response with Server Time in payload
+                                Message response = CreateMsg(msgTimeResponse, msg.studentID, serverTime, 0, timeStr.c_str(), timeStr.length());
+                                
+                                char respBuffer[1024];
+                                int respSize = serialize(response, respBuffer);
+                                send(sd, respBuffer, respSize, 0);
                                 break;
                             }
                         }

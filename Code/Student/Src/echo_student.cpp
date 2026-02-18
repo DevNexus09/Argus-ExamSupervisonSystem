@@ -17,6 +17,7 @@
 #include <ctime>
 #include <sstream>
 #include <sys/wait.h> // Required for waitpid()
+#include <chrono>     // Required for Monotonic Clock
 #include "../../Common/include/protocol.h"
 #include "../../Common/include/trie.h"
 
@@ -43,6 +44,12 @@ uint32_t globalSequenceNum = 0;
 time_t lastHeartbeatTime = 0;
 time_t lastCheckTime = 0;
 
+// Time Synchronization Globals (Cristian's Algorithm)
+int64_t clockOffset = 0; // Offset = ServerTime - StudentTime
+time_t serverSyncTime = 0;
+std::chrono::steady_clock::time_point monotonicSyncTime;
+bool isTimeSynced = false;
+
 // --- FORWARD DECLARATIONS ---
 void signalHandler(int signum);
 bool connectToServer();
@@ -51,13 +58,14 @@ void handleIncomingACKs();
 void processPendingMessages();
 void checkHeartbeat();
 void checkTampering();
+void synchronizeClock(); // New: Cristian's Algorithm
 string findActiveInterface();
 string parseDNSName(const u_char* packet, int& offset);
 string trim(const string& str);
 void loadWhitelist();
 void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet);
-void run_student_logic();   // New: Encapsulated logic for the worker process
-void sendWatchdogAlert();   // New: Alert function for the watchdog
+void run_student_logic();   // Encapsulated logic for the worker process
+void sendWatchdogAlert();   // Alert function for the watchdog
 
 // --- Implementations ---
 
@@ -67,7 +75,7 @@ void signalHandler(int signum) {
     if (handle) pcap_breakloop(handle);
 }
 
-// NEW: Helper function for the Watchdog to send an alert when Child dies
+// Helper function for the Watchdog to send an alert when Child dies
 void sendWatchdogAlert() {
     int alert_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (alert_sock < 0) return;
@@ -83,7 +91,6 @@ void sendWatchdogAlert() {
     }
 
     string alertStr = "Watchdog: Student Process Killed Manually!";
-    // Uses the global currentStudentID which is populated in main() before forking
     Message msg = CreateMsg(msgTamper, currentStudentID, time(0), 0, alertStr.c_str(), alertStr.length());
     
     char buffer[1024];
@@ -117,10 +124,89 @@ bool connectToServer() {
     return true;
 }
 
+// New: Robust Time Synchronization using Cristian's Algorithm
+void synchronizeClock() {
+    if (sock == 0) connectToServer();
+    if (sock == 0) {
+        cerr << "[Error] Cannot sync time: Offline." << endl;
+        return;
+    }
+
+    cout << "[System] Synchronizing time with Supervisor..." << endl;
+
+    long long bestRTT = LLONG_MAX;
+    time_t bestServerTime = 0;
+    std::chrono::steady_clock::time_point bestT3;
+    bool success = false;
+
+    // "Best of 3" Strategy
+    for (int i = 0; i < 3; i++) {
+        Message req = CreateMsg(msgTimeRequest, currentStudentID, time(0), 0, NULL, 0);
+        
+        auto t0 = std::chrono::steady_clock::now(); // T0 (Monotonic)
+        
+        // Send Request
+        char buffer[1024];
+        int msgSize = serialize(req, buffer);
+        if (send(sock, buffer, msgSize, 0) < 0) continue;
+
+        // Wait for Response
+        // Note: Using a blocking recv here for the handshake phase is acceptable
+        int len = recv(sock, buffer, 1024, 0);
+        auto t3 = std::chrono::steady_clock::now(); // T3 (Monotonic)
+
+        if (len > 0) {
+            Message res;
+            deserialize(buffer, &res);
+            if (res.msgType == msgTimeResponse) {
+                // Parse Server Time from data payload
+                time_t tServer = (time_t)atoll(res.data);
+                
+                long long rtt = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t0).count();
+                
+                if (rtt < bestRTT) {
+                    bestRTT = rtt;
+                    bestServerTime = tServer;
+                    bestT3 = t3;
+                    success = true;
+                }
+            }
+        }
+    }
+
+    if (success) {
+        long long latency = bestRTT / 2; // Estimated One-Way Latency
+        
+        // Derived Server Time at the moment of T3
+        time_t predictedServerTime = bestServerTime + (latency / 1000); // convert ms to seconds
+        
+        // Calculate Offset: Offset = ServerTime - StudentTime
+        // This offset allows us to convert local time(0) to Server Time: Trusted = Local + Offset
+        clockOffset = predictedServerTime - time(0);
+        
+        // Store Monotonic Reference for Tamper Checking
+        serverSyncTime = predictedServerTime;
+        monotonicSyncTime = bestT3;
+        isTimeSynced = true;
+
+        cout << "[System] Time Synced. RTT: " << bestRTT << "ms. Offset: " << clockOffset << "s." << endl;
+    } else {
+        cerr << "[Error] Time Sync Failed! Proceeding with local time (Risky)." << endl;
+    }
+}
+
 void sendMessage(Message& msg) {
     if (msg.sequenceNumber == 0) {
         msg.sequenceNumber = ++globalSequenceNum;
     }
+    
+    // Apply Trusted Time to Message Timestamp
+    if (isTimeSynced) {
+        msg.timestamp = time(0) + clockOffset;
+    } else {
+        msg.timestamp = time(0);
+    }
+    
     msg.checksum = CalculateChecksum(msg);
 
     if (msg.msgType == msgViolation || msg.msgType == msgTamper) {
@@ -190,14 +276,35 @@ void checkHeartbeat() {
 }
 
 void checkTampering() {
-    time_t now = time(0);
-    if (now < lastCheckTime) {
-        cout << "[ALERT] System time manipulation detected!" << endl;
-        string alertMsg = "System Time Moved Backwards";
-        Message msg = CreateMsg(msgTamper, currentStudentID, now, 0, alertMsg.c_str(), alertMsg.length());
+    if (!isTimeSynced) return;
+
+    // 1. Calculate Trusted Time using Monotonic Clock (Independent of System Clock)
+    auto nowMono = std::chrono::steady_clock::now();
+    long long elapsedSecs = std::chrono::duration_cast<std::chrono::seconds>(nowMono - monotonicSyncTime).count();
+    time_t trustedTime = serverSyncTime + elapsedSecs;
+
+    // 2. Get Current System Time + Offset
+    time_t currentSystemTimeTrusted = time(0) + clockOffset;
+
+    // 3. Compare
+    // If user changes OS clock, 'time(0)' changes, so 'currentSystemTimeTrusted' changes.
+    // 'trustedTime' (Monotonic) does NOT change.
+    long long drift = abs(trustedTime - currentSystemTimeTrusted);
+
+    if (drift > 30) { // Threshold: 30 seconds
+        cout << "[ALERT] System time manipulation detected! Drift: " << drift << "s" << endl;
+        string alertMsg = "System Time Mismatch (Drift: " + to_string(drift) + "s)";
+        
+        // Note: sendMessage will use (time(0) + offset). We might want to force the trusted timestamp?
+        // sendMessage handles using the offset, but here we explicitly found the offset is wrong relative to reality.
+        // We send the alert anyway.
+        Message msg = CreateMsg(msgTamper, currentStudentID, trustedTime, 0, alertMsg.c_str(), alertMsg.length());
         sendMessage(msg);
+        
+        // Optional: Re-sync or force exit?
+        // For now, we alert.
+        lastCheckTime = time(0); 
     }
-    lastCheckTime = now;
 }
 
 string findActiveInterface() {
@@ -276,11 +383,10 @@ string trim(const string& str) {
 }
 
 void loadWhitelist() {
-    // Try multiple possible paths for the config file
     const char* paths[] = {
-        "Code/Student/config/whitelist.txt",  // If running from ARGUS root
-        "../config/whitelist.txt",            // If running from Src folder
-        "whitelist.txt"                       // If file is in current folder
+        "Code/Student/config/whitelist.txt",
+        "../config/whitelist.txt",
+        "whitelist.txt"
     };
 
     ifstream file;
@@ -292,13 +398,11 @@ void loadWhitelist() {
             loadedPath = path;
             break;
         }
-        file.clear(); // Clear error flags before next try
+        file.clear();
     }
 
     if (!file.is_open()) {
         cerr << "\n[ERROR] Whitelist file NOT found! Blocklist might be aggressive." << endl;
-        cerr << "[Info] Expected at: Code/Student/config/whitelist.txt" << endl;
-        // Default fallback to prevent total lockout during testing
         Insert(&whitelistTrie, "google.com");
         return;
     }
@@ -316,30 +420,24 @@ void loadWhitelist() {
 }
 
 void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
-    // 1. Define Offsets (Crucial for parsing)
-    int ip_header_offset = 14; // Ethernet header is 14 bytes
+    int ip_header_offset = 14; 
     struct ip *iph = (struct ip *)(packet + ip_header_offset);
     int ip_header_len = iph->ip_hl * 4;
     
-    // 2. Filter for UDP/DNS Traffic
     struct udphdr *udph = (struct udphdr *)(packet + ip_header_offset + ip_header_len);
     
-    // Handle both macOS and Linux struct names
     #ifdef __APPLE__
         if (ntohs(udph->uh_dport) != DNS_PORT) return;
     #else
         if (ntohs(udph->dest) != DNS_PORT) return;
     #endif
 
-    // 3. Parse the DNS Name
-    int dns_offset = ip_header_offset + ip_header_len + 8; // 8 bytes for UDP header
-    int query_offset = dns_offset + 12; // 12 bytes for DNS fixed header
+    int dns_offset = ip_header_offset + ip_header_len + 8;
+    int query_offset = dns_offset + 12;
     string website = parseDNSName(packet, query_offset);
 
     if (website.empty()) return;
 
-    // 4. Subdomain Matching Logic (The Real Fix)
-    // This loop checks "www.google.com", then "google.com", then "com"
     string tempCheck = website;
     bool isAllowed = false;
 
@@ -349,24 +447,23 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
             break;
         }
         
-        // Find the next dot to strip the subdomain
         size_t firstDot = tempCheck.find('.');
-        if (firstDot == string::npos) break; // No more dots, stop checking
+        if (firstDot == string::npos) break;
         
         tempCheck = tempCheck.substr(firstDot + 1);
     }
 
-    // 5. Flag Violation if still not allowed
     if (!isAllowed) {
-        // [DEBUG PRINT] - remove this later if spammy
-        // cout << "[DEBUG] Blocked: " << website << " (Check whitelist.txt)" << endl;
-
         cout << "[UNAUTHORIZED] " << website << " detected!" << endl;
         Message msg;
         msg.msgType = msgViolation;
         msg.studentID = currentStudentID;
         strncpy(msg.studentName, currentStudentName, 31);
-        msg.timestamp = time(0); 
+        
+        // Use Trusted Time
+        if (isTimeSynced) msg.timestamp = time(0) + clockOffset;
+        else msg.timestamp = time(0);
+
         msg.sequenceNumber = 0; 
         strncpy(msg.data, website.c_str(), sizeof(msg.data) - 1);
         msg.dataLength = website.length();
@@ -374,13 +471,14 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
     }
 }
 
-// NEW: Refactored logic of the student client, now callable by the Child process
 void run_student_logic() {
-    // Restore signal handling (since Parent ignores it)
     signal(SIGINT, signalHandler);
 
     connectToServer();
     loadWhitelist();
+    
+    // PERFORM CLOCK SYNC
+    synchronizeClock();
 
     lastHeartbeatTime = time(0);
     lastCheckTime = time(0);
@@ -389,7 +487,7 @@ void run_student_logic() {
     if (dev.empty()) {
         cerr << "[Error] No active network interface found. (Try running with sudo)" << endl;
         if (sock > 0) close(sock);
-        exit(EXIT_FAILURE); // Use exit() instead of return to notify Watchdog
+        exit(EXIT_FAILURE);
     }
     cout << "[System] Auto-selected interface: " << dev << endl;
 
@@ -398,7 +496,7 @@ void run_student_logic() {
     if (handle == NULL) {
         cerr << "Couldn't open device: " << errbuf << endl;
         if (sock > 0) close(sock);
-        exit(EXIT_FAILURE); // Notify Watchdog of failure
+        exit(EXIT_FAILURE);
     }
 
     struct bpf_program fp;
@@ -423,7 +521,7 @@ void run_student_logic() {
         
         handleIncomingACKs();
         checkHeartbeat();
-        checkTampering();
+        checkTampering(); // Now checks for Time Manipulation
         processPendingMessages();
     }
 
@@ -432,7 +530,6 @@ void run_student_logic() {
 }
 
 int main() {
-    // 1. INPUTS (Happens once in the initial Parent process)
     cout << "--- ARGUS STUDENT CLIENT ---" << endl;
     cout << "Enter Student ID: ";
     cin >> currentStudentID;
@@ -440,7 +537,6 @@ int main() {
     cin.ignore();
     cin.getline(currentStudentName, 32);
 
-    // 2. WATCHDOG LOOP
     while(true) {
         pid_t pid = fork();
 
@@ -449,35 +545,25 @@ int main() {
             exit(1);
         }
         else if (pid == 0) {
-            // --- CHILD PROCESS (Worker) ---
-            // Run the actual exam monitoring logic
             run_student_logic();
-            
-            // If we reach here, 'running' became false (Graceful exit via Ctrl+C)
             exit(0); 
         }
         else {
-            // --- PARENT PROCESS (Watchdog) ---
             cout << "[Watchdog] Monitoring Worker Process (PID: " << pid << ")..." << endl;
-            
-            // Ignore Ctrl+C in Parent so the Watchdog itself isn't easily killed
             signal(SIGINT, SIG_IGN);
 
             int status;
-            waitpid(pid, &status, 0); // Block and wait for Child to die
+            waitpid(pid, &status, 0); 
 
-            // Check exit status
             if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-                // Scenario A: Normal Exit (e.g., Ctrl+C was handled gracefully by Child)
                 cout << "[Watchdog] Worker finished normally. Exiting." << endl;
                 break; 
             }
             else {
-                // Scenario B: Abnormal Exit (Crash, Kill -9, or Logic Failure)
                 cout << "\n[ALERT] Worker Process killed! Sending Tamper Alert and Restarting..." << endl;
-                sendWatchdogAlert(); // Notify Supervisor
-                sleep(1); // Prevent instant CPU loop if fork fails repeatedly
-                continue; // Restart loop -> Fork new Child
+                sendWatchdogAlert(); 
+                sleep(1); 
+                continue; 
             }
         }
     }

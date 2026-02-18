@@ -11,6 +11,8 @@
 #define msgACK 3
 #define msgHeartbeat 4  
 #define msgTamper 5     
+#define msgTimeRequest 6
+#define msgTimeResponse 7
 
 static const std::string SECRET_KEY = "cIpHer.aRsx2025";
 

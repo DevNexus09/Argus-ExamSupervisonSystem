@@ -24,7 +24,6 @@ cppreference.com
 devdocs.io
 replit.com
 codesandbox.io
-
 chrome.cloudflare-dns.com
 main.vscode-cdn.net
 api.githubcopilot.com
@@ -42,3 +41,4 @@ signaler-pa.clients6.google.com
 beacons.gcp.gvt2.com
 authentication.urban-vpn.com
 accounts.google.com
+dns.google

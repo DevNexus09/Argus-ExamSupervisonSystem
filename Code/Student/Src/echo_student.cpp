@@ -16,6 +16,7 @@
 #include <map> 
 #include <ctime>
 #include <sstream>
+#include <sys/wait.h> // Required for waitpid()
 #include "../../Common/include/protocol.h"
 #include "../../Common/include/trie.h"
 
@@ -42,7 +43,7 @@ uint32_t globalSequenceNum = 0;
 time_t lastHeartbeatTime = 0;
 time_t lastCheckTime = 0;
 
-// --- FORWARD DECLARATIONS (Fixes "Not Defined" Errors) ---
+// --- FORWARD DECLARATIONS ---
 void signalHandler(int signum);
 bool connectToServer();
 void sendMessage(Message& msg);
@@ -55,6 +56,8 @@ string parseDNSName(const u_char* packet, int& offset);
 string trim(const string& str);
 void loadWhitelist();
 void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet);
+void run_student_logic();   // New: Encapsulated logic for the worker process
+void sendWatchdogAlert();   // New: Alert function for the watchdog
 
 // --- Implementations ---
 
@@ -62,6 +65,31 @@ void signalHandler(int signum) {
     cout << "\n[System] Stopping Student Client..." << endl;
     running = false;
     if (handle) pcap_breakloop(handle);
+}
+
+// NEW: Helper function for the Watchdog to send an alert when Child dies
+void sendWatchdogAlert() {
+    int alert_sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (alert_sock < 0) return;
+
+    struct sockaddr_in serv_addr;
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(PORT);
+    if (inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr) <= 0) {
+        close(alert_sock); return;
+    }
+    if (connect(alert_sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        close(alert_sock); return;
+    }
+
+    string alertStr = "Watchdog: Student Process Killed Manually!";
+    // Uses the global currentStudentID which is populated in main() before forking
+    Message msg = CreateMsg(msgTamper, currentStudentID, time(0), 0, alertStr.c_str(), alertStr.length());
+    
+    char buffer[1024];
+    int msgSize = serialize(msg, buffer);
+    send(alert_sock, buffer, msgSize, 0);
+    close(alert_sock);
 }
 
 bool connectToServer() {
@@ -101,9 +129,8 @@ void sendMessage(Message& msg) {
 
     if (sock > 0) {
         char buffer[1024];
-        int msgSize = serialize(msg, buffer); // Capture exact size
+        int msgSize = serialize(msg, buffer); 
         
-        // FIX: Send 'msgSize', not 'sizeof(Message)'
         if (send(sock, buffer, msgSize, 0) < 0) { 
             cout << "[Error] Send failed. Connection lost." << endl;
             close(sock);
@@ -141,7 +168,7 @@ void processPendingMessages() {
             cout << "[Retry] Resending Msg #" << it->first << "..." << endl;
             
             char buffer[1024];
-            int msgSize = serialize(it->second.first, buffer); // Capture exact size
+            int msgSize = serialize(it->second.first, buffer); 
             
             if (send(sock, buffer, msgSize, 0) < 0) {
                 close(sock); sock = 0;
@@ -174,7 +201,6 @@ void checkTampering() {
 }
 
 string findActiveInterface() {
-    // 1. Linux Check (Keep this for lab compatibility)
     ifstream routeFile("/proc/net/route");
     if (routeFile.is_open()) {
         string line;
@@ -191,14 +217,12 @@ string findActiveInterface() {
         routeFile.close();
     }
 
-    // 2. macOS / Generic Fallback
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_if_t *alldevs, *d;
     string selected = "";
     bool foundPreferred = false;
 
     if (pcap_findalldevs(&alldevs, errbuf) != -1) {
-        // PASS 1: Priority check for 'en0' (Standard Wi-Fi)
         for (d = alldevs; d; d = d->next) {
             if (string(d->name) == "en0") {
                 selected = "en0";
@@ -207,17 +231,15 @@ string findActiveInterface() {
             }
         }
 
-        // PASS 2: If en0 is missing, find first valid non-virtual interface
         if (!foundPreferred) {
             for (d = alldevs; d; d = d->next) {
                 string name = d->name;
-                // Exclude: Loopback (lo), Bridge, P2P, VPN (utun), Access Point (ap), Apple Wireless (awdl)
                 if (name.find("lo") == string::npos && 
                     name.find("bridge") == string::npos && 
                     name.find("p2p") == string::npos && 
                     name.find("utun") == string::npos &&
-                    name.find("ap") == string::npos &&    // NEW: Ignore Virtual Access Points
-                    name.find("awdl") == string::npos) {  // NEW: Ignore AirDrop/Direct Link
+                    name.find("ap") == string::npos &&    
+                    name.find("awdl") == string::npos) {  
                     selected = name;
                     break;
                 }
@@ -254,9 +276,29 @@ string trim(const string& str) {
 }
 
 void loadWhitelist() {
-    ifstream file(WHITELIST_PATH);
+    // Try multiple possible paths for the config file
+    const char* paths[] = {
+        "Code/Student/config/whitelist.txt",  // If running from ARGUS root
+        "../config/whitelist.txt",            // If running from Src folder
+        "whitelist.txt"                       // If file is in current folder
+    };
+
+    ifstream file;
+    string loadedPath = "";
+
+    for (const char* path : paths) {
+        file.open(path);
+        if (file.is_open()) {
+            loadedPath = path;
+            break;
+        }
+        file.clear(); // Clear error flags before next try
+    }
+
     if (!file.is_open()) {
-        cerr << "[Error] Could not open whitelist at: " << WHITELIST_PATH << endl;
+        cerr << "\n[ERROR] Whitelist file NOT found! Blocklist might be aggressive." << endl;
+        cerr << "[Info] Expected at: Code/Student/config/whitelist.txt" << endl;
+        // Default fallback to prevent total lockout during testing
         Insert(&whitelistTrie, "google.com");
         return;
     }
@@ -270,29 +312,55 @@ void loadWhitelist() {
         count++;
     }
     file.close();
-    cout << "[System] Whitelist loaded (" << count << " entries)." << endl;
+    cout << "[System] Whitelist loaded from " << loadedPath << " (" << count << " entries)." << endl;
 }
 
 void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
-    int ip_header_offset = 14;
+    // 1. Define Offsets (Crucial for parsing)
+    int ip_header_offset = 14; // Ethernet header is 14 bytes
     struct ip *iph = (struct ip *)(packet + ip_header_offset);
     int ip_header_len = iph->ip_hl * 4;
+    
+    // 2. Filter for UDP/DNS Traffic
     struct udphdr *udph = (struct udphdr *)(packet + ip_header_offset + ip_header_len);
     
-    // Cross-platform compatibility for UDP header
+    // Handle both macOS and Linux struct names
     #ifdef __APPLE__
         if (ntohs(udph->uh_dport) != DNS_PORT) return;
     #else
         if (ntohs(udph->dest) != DNS_PORT) return;
     #endif
 
-    int dns_offset = ip_header_offset + ip_header_len + 8;
-    int query_offset = dns_offset + 12;
+    // 3. Parse the DNS Name
+    int dns_offset = ip_header_offset + ip_header_len + 8; // 8 bytes for UDP header
+    int query_offset = dns_offset + 12; // 12 bytes for DNS fixed header
     string website = parseDNSName(packet, query_offset);
 
     if (website.empty()) return;
 
-    if (!Search(&whitelistTrie, website)) {
+    // 4. Subdomain Matching Logic (The Real Fix)
+    // This loop checks "www.google.com", then "google.com", then "com"
+    string tempCheck = website;
+    bool isAllowed = false;
+
+    while (!tempCheck.empty()) {
+        if (Search(&whitelistTrie, tempCheck)) {
+            isAllowed = true;
+            break;
+        }
+        
+        // Find the next dot to strip the subdomain
+        size_t firstDot = tempCheck.find('.');
+        if (firstDot == string::npos) break; // No more dots, stop checking
+        
+        tempCheck = tempCheck.substr(firstDot + 1);
+    }
+
+    // 5. Flag Violation if still not allowed
+    if (!isAllowed) {
+        // [DEBUG PRINT] - remove this later if spammy
+        // cout << "[DEBUG] Blocked: " << website << " (Check whitelist.txt)" << endl;
+
         cout << "[UNAUTHORIZED] " << website << " detected!" << endl;
         Message msg;
         msg.msgType = msgViolation;
@@ -306,15 +374,10 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
     }
 }
 
-int main() {
+// NEW: Refactored logic of the student client, now callable by the Child process
+void run_student_logic() {
+    // Restore signal handling (since Parent ignores it)
     signal(SIGINT, signalHandler);
-
-    cout << "--- ARGUS STUDENT CLIENT ---" << endl;
-    cout << "Enter Student ID: ";
-    cin >> currentStudentID;
-    cout << "Enter Student Name: ";
-    cin.ignore();
-    cin.getline(currentStudentName, 32);
 
     connectToServer();
     loadWhitelist();
@@ -326,7 +389,7 @@ int main() {
     if (dev.empty()) {
         cerr << "[Error] No active network interface found. (Try running with sudo)" << endl;
         if (sock > 0) close(sock);
-        return 1;
+        exit(EXIT_FAILURE); // Use exit() instead of return to notify Watchdog
     }
     cout << "[System] Auto-selected interface: " << dev << endl;
 
@@ -335,12 +398,12 @@ int main() {
     if (handle == NULL) {
         cerr << "Couldn't open device: " << errbuf << endl;
         if (sock > 0) close(sock);
-        return 2;
+        exit(EXIT_FAILURE); // Notify Watchdog of failure
     }
 
     struct bpf_program fp;
-    if (pcap_compile(handle, &fp, "udp port 53", 0, PCAP_NETMASK_UNKNOWN) == -1) return 2;
-    if (pcap_setfilter(handle, &fp) == -1) return 2;
+    if (pcap_compile(handle, &fp, "udp port 53", 0, PCAP_NETMASK_UNKNOWN) == -1) exit(EXIT_FAILURE);
+    if (pcap_setfilter(handle, &fp) == -1) exit(EXIT_FAILURE);
 
     cout << "[System] Monitoring DNS traffic..." << endl;
     
@@ -366,5 +429,58 @@ int main() {
 
     pcap_close(handle);
     if (sock > 0) close(sock);
+}
+
+int main() {
+    // 1. INPUTS (Happens once in the initial Parent process)
+    cout << "--- ARGUS STUDENT CLIENT ---" << endl;
+    cout << "Enter Student ID: ";
+    cin >> currentStudentID;
+    cout << "Enter Student Name: ";
+    cin.ignore();
+    cin.getline(currentStudentName, 32);
+
+    // 2. WATCHDOG LOOP
+    while(true) {
+        pid_t pid = fork();
+
+        if (pid < 0) {
+            perror("Fork failed");
+            exit(1);
+        }
+        else if (pid == 0) {
+            // --- CHILD PROCESS (Worker) ---
+            // Run the actual exam monitoring logic
+            run_student_logic();
+            
+            // If we reach here, 'running' became false (Graceful exit via Ctrl+C)
+            exit(0); 
+        }
+        else {
+            // --- PARENT PROCESS (Watchdog) ---
+            cout << "[Watchdog] Monitoring Worker Process (PID: " << pid << ")..." << endl;
+            
+            // Ignore Ctrl+C in Parent so the Watchdog itself isn't easily killed
+            signal(SIGINT, SIG_IGN);
+
+            int status;
+            waitpid(pid, &status, 0); // Block and wait for Child to die
+
+            // Check exit status
+            if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+                // Scenario A: Normal Exit (e.g., Ctrl+C was handled gracefully by Child)
+                cout << "[Watchdog] Worker finished normally. Exiting." << endl;
+                break; 
+            }
+            else {
+                // Scenario B: Abnormal Exit (Crash, Kill -9, or Logic Failure)
+                cout << "\n[ALERT] Worker Process killed! Sending Tamper Alert and Restarting..." << endl;
+                sendWatchdogAlert(); // Notify Supervisor
+                sleep(1); // Prevent instant CPU loop if fork fails repeatedly
+                continue; // Restart loop -> Fork new Child
+            }
+        }
+    }
+
     return 0;
 }

@@ -16,8 +16,8 @@
 #include <map> 
 #include <ctime>
 #include <sstream>
-#include <sys/wait.h> // Required for waitpid()
-#include <chrono>     // Required for Monotonic Clock
+#include <sys/wait.h> 
+#include <chrono>     
 #include "../../Common/include/protocol.h"
 #include "../../Common/include/trie.h"
 
@@ -37,6 +37,7 @@ uint32_t currentStudentID = 0;
 char currentStudentName[32];
 Trie whitelistTrie;
 bool running = true;
+string currentSessionKey = ""; // Stores the negotiated RC4 key
 
 // Reliability Globals
 map<uint32_t, pair<Message, time_t>> pendingACKs; 
@@ -44,8 +45,8 @@ uint32_t globalSequenceNum = 0;
 time_t lastHeartbeatTime = 0;
 time_t lastCheckTime = 0;
 
-// Time Synchronization Globals (Cristian's Algorithm)
-int64_t clockOffset = 0; // Offset = ServerTime - StudentTime
+// Time Synchronization Globals
+int64_t clockOffset = 0; 
 time_t serverSyncTime = 0;
 std::chrono::steady_clock::time_point monotonicSyncTime;
 bool isTimeSynced = false;
@@ -53,19 +54,20 @@ bool isTimeSynced = false;
 // --- FORWARD DECLARATIONS ---
 void signalHandler(int signum);
 bool connectToServer();
+bool performHandshake();
 void sendMessage(Message& msg);
 void handleIncomingACKs();
 void processPendingMessages();
 void checkHeartbeat();
 void checkTampering();
-void synchronizeClock(); // New: Cristian's Algorithm
+void synchronizeClock(); 
 string findActiveInterface();
 string parseDNSName(const u_char* packet, int& offset);
 string trim(const string& str);
 void loadWhitelist();
 void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet);
-void run_student_logic();   // Encapsulated logic for the worker process
-void sendWatchdogAlert();   // Alert function for the watchdog
+void run_student_logic();   
+void sendWatchdogAlert();   
 
 // --- Implementations ---
 
@@ -75,7 +77,6 @@ void signalHandler(int signum) {
     if (handle) pcap_breakloop(handle);
 }
 
-// Helper function for the Watchdog to send an alert when Child dies
 void sendWatchdogAlert() {
     int alert_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (alert_sock < 0) return;
@@ -90,13 +91,84 @@ void sendWatchdogAlert() {
         close(alert_sock); return;
     }
 
+    // Attempt to handshake or send basic alert (Note: Watchdog might fail if strict security is enforced without context, 
+    // but for simplicity we try sending with empty key or previous key if persistent storage existed)
+    // In this simplified version, watchdog might be limited.
+    
     string alertStr = "Watchdog: Student Process Killed Manually!";
     Message msg = CreateMsg(msgTamper, currentStudentID, time(0), 0, alertStr.c_str(), alertStr.length());
     
     char buffer[1024];
-    int msgSize = serialize(msg, buffer);
+    // Try sending with empty key if we lost context, or raw.
+    int msgSize = serialize(msg, buffer, ""); 
     send(alert_sock, buffer, msgSize, 0);
     close(alert_sock);
+}
+
+// ---------------------------------------------------------
+// NEW: Handshake Protocol Implementation
+// ---------------------------------------------------------
+bool performHandshake() {
+    cout << "[Security] Initiating Secure Handshake..." << endl;
+    
+    // 1. Send Handshake Init
+    Message initMsg = CreateMsg(msgHandshakeInit, currentStudentID, time(0), 0, NULL, 0);
+    char buffer[1024];
+    int size = serialize(initMsg, buffer, ""); // Plaintext
+    if (send(sock, buffer, size, 0) < 0) return false;
+
+    // 2. Receive Server Public Key (N, E)
+    size = recv(sock, buffer, 1024, 0);
+    if (size <= 0) return false;
+    
+    Message keyMsg;
+    deserialize(buffer, &keyMsg, ""); // Plaintext
+    
+    if (keyMsg.msgType != msgHandshakeKey) {
+        cerr << "[Error] Handshake failed: Expected Public Key." << endl;
+        return false;
+    }
+
+    long long serverN, serverE;
+    memcpy(&serverN, keyMsg.data, sizeof(long long));
+    memcpy(&serverE, keyMsg.data + sizeof(long long), sizeof(long long));
+
+    // 3. Generate Random Session Key
+    string chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    currentSessionKey = "";
+    srand(time(0));
+    for (int i = 0; i < 16; ++i) currentSessionKey += chars[rand() % chars.length()];
+
+    cout << "[Security] Generated Session Key: " << currentSessionKey << endl;
+
+    // 4. Encrypt Session Key using RSA
+    // We encrypt character by character into a buffer of long longs
+    char encryptedPayload[512];
+    int payloadOffset = 0;
+    
+    for (char c : currentSessionKey) {
+        long long encryptedChar = Power((long long)c, serverE, serverN);
+        memcpy(encryptedPayload + payloadOffset, &encryptedChar, sizeof(long long));
+        payloadOffset += sizeof(long long);
+    }
+
+    // 5. Send Encrypted Session Key
+    Message responseMsg = CreateMsg(msgHandshakeResponse, currentStudentID, time(0), 0, encryptedPayload, payloadOffset);
+    size = serialize(responseMsg, buffer, ""); // Container is plaintext, payload is RSA encrypted
+    send(sock, buffer, size, 0);
+
+    // 6. Wait for Confirmation (ACK) encrypted with new Session Key
+    size = recv(sock, buffer, 1024, 0);
+    if (size > 0) {
+        Message ackMsg;
+        deserialize(buffer, &ackMsg, currentSessionKey); // Try decrypting with new key
+        if (ackMsg.msgType == msgACK) {
+            cout << "[Security] Handshake Successful! Secure Tunnel Established." << endl;
+            return true;
+        }
+    }
+    
+    return false;
 }
 
 bool connectToServer() {
@@ -120,11 +192,17 @@ bool connectToServer() {
         close(sock); sock = 0; return false;
     }
     
-    cout << "[System] Connected to Supervisor!" << endl;
+    // PERFORM HANDSHAKE IMMEDIATELY AFTER CONNECTION
+    if (!performHandshake()) {
+        cerr << "[Error] Security Handshake Failed. Disconnecting." << endl;
+        close(sock);
+        sock = 0;
+        return false;
+    }
+    
     return true;
 }
 
-// New: Robust Time Synchronization using Cristian's Algorithm
 void synchronizeClock() {
     if (sock == 0) connectToServer();
     if (sock == 0) {
@@ -139,29 +217,23 @@ void synchronizeClock() {
     std::chrono::steady_clock::time_point bestT3;
     bool success = false;
 
-    // "Best of 3" Strategy
     for (int i = 0; i < 3; i++) {
         Message req = CreateMsg(msgTimeRequest, currentStudentID, time(0), 0, NULL, 0);
         
-        auto t0 = std::chrono::steady_clock::now(); // T0 (Monotonic)
+        auto t0 = std::chrono::steady_clock::now(); 
         
-        // Send Request
         char buffer[1024];
-        int msgSize = serialize(req, buffer);
+        int msgSize = serialize(req, buffer, currentSessionKey);
         if (send(sock, buffer, msgSize, 0) < 0) continue;
 
-        // Wait for Response
-        // Note: Using a blocking recv here for the handshake phase is acceptable
         int len = recv(sock, buffer, 1024, 0);
-        auto t3 = std::chrono::steady_clock::now(); // T3 (Monotonic)
+        auto t3 = std::chrono::steady_clock::now(); 
 
         if (len > 0) {
             Message res;
-            deserialize(buffer, &res);
+            deserialize(buffer, &res, currentSessionKey);
             if (res.msgType == msgTimeResponse) {
-                // Parse Server Time from data payload
                 time_t tServer = (time_t)atoll(res.data);
-                
                 long long rtt = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t0).count();
                 
                 if (rtt < bestRTT) {
@@ -175,16 +247,10 @@ void synchronizeClock() {
     }
 
     if (success) {
-        long long latency = bestRTT / 2; // Estimated One-Way Latency
-        
-        // Derived Server Time at the moment of T3
-        time_t predictedServerTime = bestServerTime + (latency / 1000); // convert ms to seconds
-        
-        // Calculate Offset: Offset = ServerTime - StudentTime
-        // This offset allows us to convert local time(0) to Server Time: Trusted = Local + Offset
+        long long latency = bestRTT / 2; 
+        time_t predictedServerTime = bestServerTime + (latency / 1000); 
         clockOffset = predictedServerTime - time(0);
         
-        // Store Monotonic Reference for Tamper Checking
         serverSyncTime = predictedServerTime;
         monotonicSyncTime = bestT3;
         isTimeSynced = true;
@@ -200,22 +266,20 @@ void sendMessage(Message& msg) {
         msg.sequenceNumber = ++globalSequenceNum;
     }
     
-    // Apply Trusted Time to Message Timestamp
     if (isTimeSynced) {
         msg.timestamp = time(0) + clockOffset;
     } else {
         msg.timestamp = time(0);
     }
     
-    msg.checksum = CalculateChecksum(msg);
-
     if (msg.msgType == msgViolation || msg.msgType == msgTamper) {
         pendingACKs[msg.sequenceNumber] = make_pair(msg, time(0));
     }
 
     if (sock > 0) {
         char buffer[1024];
-        int msgSize = serialize(msg, buffer); 
+        // Use Dynamic Session Key
+        int msgSize = serialize(msg, buffer, currentSessionKey); 
         
         if (send(sock, buffer, msgSize, 0) < 0) { 
             cout << "[Error] Send failed. Connection lost." << endl;
@@ -235,7 +299,8 @@ void handleIncomingACKs() {
     
     if (len > 0) {
         Message msg;
-        deserialize(buffer, &msg);
+        // Use Dynamic Session Key
+        deserialize(buffer, &msg, currentSessionKey);
         if (msg.msgType == msgACK) {
             cout << "[System] ACK Received for Msg #" << msg.sequenceNumber << endl;
             pendingACKs.erase(msg.sequenceNumber);
@@ -254,7 +319,7 @@ void processPendingMessages() {
             cout << "[Retry] Resending Msg #" << it->first << "..." << endl;
             
             char buffer[1024];
-            int msgSize = serialize(it->second.first, buffer); 
+            int msgSize = serialize(it->second.first, buffer, currentSessionKey); 
             
             if (send(sock, buffer, msgSize, 0) < 0) {
                 close(sock); sock = 0;
@@ -278,31 +343,20 @@ void checkHeartbeat() {
 void checkTampering() {
     if (!isTimeSynced) return;
 
-    // 1. Calculate Trusted Time using Monotonic Clock (Independent of System Clock)
     auto nowMono = std::chrono::steady_clock::now();
     long long elapsedSecs = std::chrono::duration_cast<std::chrono::seconds>(nowMono - monotonicSyncTime).count();
     time_t trustedTime = serverSyncTime + elapsedSecs;
 
-    // 2. Get Current System Time + Offset
     time_t currentSystemTimeTrusted = time(0) + clockOffset;
-
-    // 3. Compare
-    // If user changes OS clock, 'time(0)' changes, so 'currentSystemTimeTrusted' changes.
-    // 'trustedTime' (Monotonic) does NOT change.
     long long drift = abs(trustedTime - currentSystemTimeTrusted);
 
-    if (drift > 30) { // Threshold: 30 seconds
+    if (drift > 30) { 
         cout << "[ALERT] System time manipulation detected! Drift: " << drift << "s" << endl;
         string alertMsg = "System Time Mismatch (Drift: " + to_string(drift) + "s)";
         
-        // Note: sendMessage will use (time(0) + offset). We might want to force the trusted timestamp?
-        // sendMessage handles using the offset, but here we explicitly found the offset is wrong relative to reality.
-        // We send the alert anyway.
         Message msg = CreateMsg(msgTamper, currentStudentID, trustedTime, 0, alertMsg.c_str(), alertMsg.length());
         sendMessage(msg);
         
-        // Optional: Re-sync or force exit?
-        // For now, we alert.
         lastCheckTime = time(0); 
     }
 }
@@ -460,7 +514,6 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
         msg.studentID = currentStudentID;
         strncpy(msg.studentName, currentStudentName, 31);
         
-        // Use Trusted Time
         if (isTimeSynced) msg.timestamp = time(0) + clockOffset;
         else msg.timestamp = time(0);
 
@@ -477,7 +530,6 @@ void run_student_logic() {
     connectToServer();
     loadWhitelist();
     
-    // PERFORM CLOCK SYNC
     synchronizeClock();
 
     lastHeartbeatTime = time(0);
@@ -521,7 +573,7 @@ void run_student_logic() {
         
         handleIncomingACKs();
         checkHeartbeat();
-        checkTampering(); // Now checks for Time Manipulation
+        checkTampering(); 
         processPendingMessages();
     }
 
@@ -530,7 +582,7 @@ void run_student_logic() {
 }
 
 int main() {
-    cout << "--- ARGUS STUDENT CLIENT ---" << endl;
+    cout << "--- ARGUS STUDENT CLIENT (SECURE) ---" << endl;
     cout << "Enter Student ID: ";
     cin >> currentStudentID;
     cout << "Enter Student Name: ";

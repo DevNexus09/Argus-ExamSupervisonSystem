@@ -2,11 +2,16 @@
 #include <cstring>
 #include <arpa/inet.h>
 #include <vector>
+#include <cmath>
+#include <cstdlib>
+#include <ctime>
 
 using namespace std;
 
 // --- Encryption Logic (RC4) ---
 void RC4_Logic(char* data, int length, const string& key) {
+    if (key.empty()) return; // Skip if no key provided (Handshake messages)
+
     vector<int> S(256);
     for(int i=0; i<256; i++) S[i] = i;
     
@@ -34,45 +39,77 @@ void SecureDecrypt(char* data, int length, const string& key) {
     RC4_Logic(data, length, key);
 }
 
-// --- Checksum Logic ---
-uint32_t CalculateChecksum(const Message& msg) {
-    uint32_t sum = 0;
-    sum += msg.msgType;
-    
-    sum += (msg.studentID >> 24) & 0xFF;
-    sum += (msg.studentID >> 16) & 0xFF;
-    sum += (msg.studentID >> 8) & 0xFF;
-    sum += msg.studentID & 0xFF;
-    
-    sum += (msg.timestamp >> 24) & 0xFF;
-    sum += (msg.timestamp >> 16) & 0xFF;
-    sum += (msg.timestamp >> 8) & 0xFF;
-    sum += msg.timestamp & 0xFF;
+// --- RSA Math Implementations ---
 
-    // NEW: Include Sequence Number
-    sum += (msg.sequenceNumber >> 24) & 0xFF;
-    sum += (msg.sequenceNumber >> 16) & 0xFF;
-    sum += (msg.sequenceNumber >> 8) & 0xFF;
-    sum += msg.sequenceNumber & 0xFF;
-    
-    sum += (msg.dataLength >> 8) & 0xFF;
-    sum += msg.dataLength & 0xFF;
-
-    for(int i = 0; i < 32; i++) sum += (unsigned char)msg.studentName[i];
-    
-    for (int i = 0; i < msg.dataLength && i < 512; i++) {
-        sum += (unsigned char)msg.data[i];
+long long Power(long long base, long long exp, long long mod) {
+    long long res = 1;
+    base = base % mod;
+    while (exp > 0) {
+        if (exp % 2 == 1) res = (res * base) % mod;
+        exp = exp >> 1;
+        base = (base * base) % mod;
     }
-
-    return sum % 256;
+    return res;
 }
 
-bool VerifyChecksum(const Message& msg) {
-    return CalculateChecksum(msg) == msg.checksum;
+long long GCD(long long a, long long b) {
+    return b == 0 ? a : GCD(b, a % b);
+}
+
+long long ExtendedGCD(long long a, long long b, long long &x, long long &y) {
+    if (a == 0) {
+        x = 0; y = 1;
+        return b;
+    }
+    long long x1, y1;
+    long long gcd = ExtendedGCD(b % a, a, x1, y1);
+    x = y1 - (b / a) * x1;
+    y = x1;
+    return gcd;
+}
+
+long long ModInverse(long long e, long long phi) {
+    long long x, y;
+    long long g = ExtendedGCD(e, phi, x, y);
+    if (g != 1) return -1;
+    return (x % phi + phi) % phi;
+}
+
+bool IsPrime(long long n) {
+    if (n <= 1) return false;
+    for (long long i = 2; i * i <= n; i++) {
+        if (n % i == 0) return false;
+    }
+    return true;
+}
+
+void GenerateRSAKeys(long long& n, long long& e, long long& d) {
+    // 1. Generate Primes (Small range for demo performance, e.g., 100-1000)
+    // In production, these should be much larger.
+    vector<long long> primes;
+    for (int i = 100; i < 500; i++) {
+        if (IsPrime(i)) primes.push_back(i);
+    }
+    
+    long long p = primes[rand() % primes.size()];
+    long long q = primes[rand() % primes.size()];
+    while (p == q) q = primes[rand() % primes.size()];
+
+    n = p * q;
+    long long phi = (p - 1) * (q - 1);
+
+    // 2. Choose E
+    e = 3;
+    while (GCD(e, phi) != 1) {
+        e += 2;
+    }
+
+    // 3. Compute D
+    d = ModInverse(e, phi);
 }
 
 // --- Serialization ---
-int serialize(const Message& msg, char* buffer) {
+int serialize(const Message& msg, char* buffer, const std::string& key) {
     int offset = 0;
     
     buffer[offset++] = msg.msgType;
@@ -88,7 +125,6 @@ int serialize(const Message& msg, char* buffer) {
     memcpy(buffer + offset, &timestp, sizeof(uint32_t));
     offset += sizeof(uint32_t);
 
-    // Serialize Sequence Number
     uint32_t seq = htonl(msg.sequenceNumber);
     memcpy(buffer + offset, &seq, sizeof(uint32_t));
     offset += sizeof(uint32_t);
@@ -100,18 +136,16 @@ int serialize(const Message& msg, char* buffer) {
     int dataSize = msg.dataLength < 512 ? msg.dataLength : 512;
     memcpy(buffer + offset, msg.data, dataSize);
     
-    SecureEncrypt(buffer + offset, dataSize, SECRET_KEY);
+    // Encrypt ONLY payload with the specific session key
+    // If key is empty (handshake), this does nothing
+    SecureEncrypt(buffer + offset, dataSize, key);
     
     offset += dataSize;
-    
-    uint32_t chksum = htonl(msg.checksum);
-    memcpy(buffer + offset, &chksum, sizeof(uint32_t));
-    offset += sizeof(uint32_t);
     
     return offset; // Return EXACT size
 }
 
-int deserialize(const char* buffer, Message* msg) {
+int deserialize(const char* buffer, Message* msg, const std::string& key) {
     int offset = 0;
     
     msg->msgType = buffer[offset++];
@@ -129,7 +163,6 @@ int deserialize(const char* buffer, Message* msg) {
     msg->timestamp = ntohl(timestp);
     offset += sizeof(uint32_t);
 
-    // Deserialize Sequence Number
     uint32_t seq;
     memcpy(&seq, buffer + offset, sizeof(uint32_t));
     msg->sequenceNumber = ntohl(seq);
@@ -143,18 +176,14 @@ int deserialize(const char* buffer, Message* msg) {
     int dataSize = msg->dataLength < 512 ? msg->dataLength : 512;
     memcpy(msg->data, buffer + offset, dataSize);
 
-    SecureDecrypt(msg->data, dataSize, SECRET_KEY);
+    // Decrypt ONLY payload
+    SecureDecrypt(msg->data, dataSize, key);
     
     offset += dataSize;
     
     if (dataSize < 512) {
         msg->data[dataSize] = '\0';
     }
-
-    uint32_t chksum;
-    memcpy(&chksum, buffer + offset, sizeof(uint32_t));
-    msg->checksum = ntohl(chksum);
-    offset += sizeof(uint32_t);
     
     return offset;
 }
@@ -172,7 +201,5 @@ Message CreateMsg(uint8_t msgType, uint32_t studentID, uint32_t timestamp,
     if (data != nullptr && dataLength > 0) {
         memcpy(msg.data, data, msg.dataLength);
     }
-    msg.checksum = CalculateChecksum(msg);
-    
     return msg;
 }

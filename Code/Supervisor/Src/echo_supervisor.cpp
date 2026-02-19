@@ -23,7 +23,16 @@ struct StudentStats {
     int totalViolations;
 };
 
+// Security Context for each client
+struct ClientSession {
+    bool isHandshakeComplete;
+    string sessionKey;      // RC4 Key
+    long long privateKeyD;  // RSA Private Key
+    long long publicKeyN;   // RSA Public Key
+};
+
 map<uint32_t, StudentStats> violationRecords;
+map<int, ClientSession> clientContext; // Maps Socket FD -> Session
 
 void saveReport() {
     ofstream file(REPORT_FILE);
@@ -39,6 +48,8 @@ void saveReport() {
 }
 
 int main() {
+    srand(time(0)); // Seed for RSA prime generation
+
     Dashboard dashboard;
     int master_socket, new_socket, client_socket[MAX_CLIENTS], max_sd, sd, valread;
     struct sockaddr_in address;
@@ -106,6 +117,11 @@ int main() {
             for (int i = 0; i < MAX_CLIENTS; i++) {
                 if (client_socket[i] == 0) {
                     client_socket[i] = new_socket;
+                    
+                    // Initialize Client Context
+                    clientContext[new_socket].isHandshakeComplete = false;
+                    clientContext[new_socket].sessionKey = "";
+                    
                     dashboard.updateConnection(true, inet_ntoa(address.sin_addr));
                     break;
                 }
@@ -118,26 +134,80 @@ int main() {
                 if ((valread = read(sd, buffer, 1024)) == 0) {
                     close(sd);
                     client_socket[i] = 0;
+                    clientContext.erase(sd); // Cleanup context
                     dashboard.updateConnection(false);
                 } else {
                     int offset = 0;
                     while (offset < valread) {
                         Message msg;
-                        int bytesProcessed = deserialize(buffer + offset, &msg);
+                        
+                        // Determine which key to use for deserialization
+                        // If handshake not complete, we expect plaintext (key="")
+                        // If handshake response, we expect plaintext wrapper, encrypted payload (key="")
+                        // Once complete, we use the specific session key.
+                        string decryptKey = clientContext[sd].isHandshakeComplete ? clientContext[sd].sessionKey : "";
+                        
+                        int bytesProcessed = deserialize(buffer + offset, &msg, decryptKey);
                         if (bytesProcessed <= 0 || (offset + bytesProcessed > valread)) break;
                         
                         offset += bytesProcessed;
-
-                        if (!VerifyChecksum(msg)) {
-                            continue;
-                        }
 
                         msg.studentName[31] = '\0';
                         if (msg.dataLength < 512) msg.data[msg.dataLength] = '\0';
                         string sName(msg.studentName);
 
                         bool sendAck = false;
+                        
                         switch (msg.msgType) {
+                            // --- HANDSHAKE PROTOCOL START ---
+                            case msgHandshakeInit: {
+                                long long n, e, d;
+                                GenerateRSAKeys(n, e, d);
+                                
+                                clientContext[sd].privateKeyD = d;
+                                clientContext[sd].publicKeyN = n;
+                                
+                                // Send Public Key (N, E)
+                                char payload[16];
+                                memcpy(payload, &n, sizeof(long long));
+                                memcpy(payload + sizeof(long long), &e, sizeof(long long));
+                                
+                                Message keyMsg = CreateMsg(msgHandshakeKey, msg.studentID, time(0), 0, payload, 16);
+                                char respBuffer[1024];
+                                int respSize = serialize(keyMsg, respBuffer, ""); // Plaintext
+                                send(sd, respBuffer, respSize, 0);
+                                break;
+                            }
+                            case msgHandshakeResponse: {
+                                // Decrypt RSA Payload (msg.data contains sequence of long longs)
+                                string recoveredKey = "";
+                                int numChars = msg.dataLength / sizeof(long long);
+                                char* ptr = msg.data;
+                                
+                                long long d = clientContext[sd].privateKeyD;
+                                long long n = clientContext[sd].publicKeyN;
+
+                                for(int k=0; k<numChars; k++) {
+                                    long long encryptedChar;
+                                    memcpy(&encryptedChar, ptr, sizeof(long long));
+                                    ptr += sizeof(long long);
+                                    
+                                    char decryptedChar = (char)Power(encryptedChar, d, n);
+                                    recoveredKey += decryptedChar;
+                                }
+                                
+                                clientContext[sd].sessionKey = recoveredKey;
+                                clientContext[sd].isHandshakeComplete = true;
+                                
+                                // Send ACK (Encrypted with new key)
+                                Message ackMsg = CreateMsg(msgACK, msg.studentID, time(0), msg.sequenceNumber, NULL, 0);
+                                char ackBuffer[1024];
+                                int ackSize = serialize(ackMsg, ackBuffer, recoveredKey);
+                                send(sd, ackBuffer, ackSize, 0);
+                                break;
+                            }
+                            // --- HANDSHAKE PROTOCOL END ---
+
                             case msgViolation: {
                                 string website(msg.data);
                                 violationRecords[msg.studentID].name = sName;
@@ -160,16 +230,14 @@ int main() {
                                 sendAck = true;
                                 break;
                             }
-                            // NEW: Handle Time Synchronization Request
                             case msgTimeRequest: {
                                 time_t serverTime = time(0);
                                 string timeStr = to_string(serverTime);
                                 
-                                // Create response with Server Time in payload
                                 Message response = CreateMsg(msgTimeResponse, msg.studentID, serverTime, 0, timeStr.c_str(), timeStr.length());
                                 
                                 char respBuffer[1024];
-                                int respSize = serialize(response, respBuffer);
+                                int respSize = serialize(response, respBuffer, clientContext[sd].sessionKey);
                                 send(sd, respBuffer, respSize, 0);
                                 break;
                             }
@@ -178,7 +246,7 @@ int main() {
                         if (sendAck) {
                             Message ackMsg = CreateMsg(msgACK, msg.studentID, time(0), msg.sequenceNumber, NULL, 0);
                             char ackBuffer[1024];
-                            int ackSize = serialize(ackMsg, ackBuffer);
+                            int ackSize = serialize(ackMsg, ackBuffer, clientContext[sd].sessionKey);
                             send(sd, ackBuffer, ackSize, 0);
                         }
                     }

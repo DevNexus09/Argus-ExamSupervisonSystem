@@ -20,6 +20,7 @@
 #include <chrono>     
 #include "../../Common/include/protocol.h"
 #include "../../Common/include/trie.h"
+#include "../../Common/include/huffman.h" // INCLUDE ADDED
 
 using namespace std;
 
@@ -37,7 +38,9 @@ uint32_t currentStudentID = 0;
 char currentStudentName[32];
 Trie whitelistTrie;
 bool running = true;
-string currentSessionKey = ""; // Stores the negotiated RC4 key
+string currentSessionKey = ""; 
+
+HuffmanCoding studentHuffman; // NEW: Huffman Instance
 
 // Reliability Globals
 map<uint32_t, pair<Message, time_t>> pendingACKs; 
@@ -91,15 +94,10 @@ void sendWatchdogAlert() {
         close(alert_sock); return;
     }
 
-    // Attempt to handshake or send basic alert (Note: Watchdog might fail if strict security is enforced without context, 
-    // but for simplicity we try sending with empty key or previous key if persistent storage existed)
-    // In this simplified version, watchdog might be limited.
-    
     string alertStr = "Watchdog: Student Process Killed Manually!";
     Message msg = CreateMsg(msgTamper, currentStudentID, time(0), 0, alertStr.c_str(), alertStr.length());
     
     char buffer[1024];
-    // Try sending with empty key if we lost context, or raw.
     int msgSize = serialize(msg, buffer, ""); 
     send(alert_sock, buffer, msgSize, 0);
     close(alert_sock);
@@ -114,7 +112,7 @@ bool performHandshake() {
     // 1. Send Handshake Init
     Message initMsg = CreateMsg(msgHandshakeInit, currentStudentID, time(0), 0, NULL, 0);
     char buffer[1024];
-    int size = serialize(initMsg, buffer, ""); // Plaintext
+    int size = serialize(initMsg, buffer, ""); 
     if (send(sock, buffer, size, 0) < 0) return false;
 
     // 2. Receive Server Public Key (N, E)
@@ -122,7 +120,7 @@ bool performHandshake() {
     if (size <= 0) return false;
     
     Message keyMsg;
-    deserialize(buffer, &keyMsg, ""); // Plaintext
+    deserialize(buffer, &keyMsg, ""); 
     
     if (keyMsg.msgType != msgHandshakeKey) {
         cerr << "[Error] Handshake failed: Expected Public Key." << endl;
@@ -142,7 +140,6 @@ bool performHandshake() {
     cout << "[Security] Generated Session Key: " << currentSessionKey << endl;
 
     // 4. Encrypt Session Key using RSA
-    // We encrypt character by character into a buffer of long longs
     char encryptedPayload[512];
     int payloadOffset = 0;
     
@@ -154,14 +151,14 @@ bool performHandshake() {
 
     // 5. Send Encrypted Session Key
     Message responseMsg = CreateMsg(msgHandshakeResponse, currentStudentID, time(0), 0, encryptedPayload, payloadOffset);
-    size = serialize(responseMsg, buffer, ""); // Container is plaintext, payload is RSA encrypted
+    size = serialize(responseMsg, buffer, ""); 
     send(sock, buffer, size, 0);
 
     // 6. Wait for Confirmation (ACK) encrypted with new Session Key
     size = recv(sock, buffer, 1024, 0);
     if (size > 0) {
         Message ackMsg;
-        deserialize(buffer, &ackMsg, currentSessionKey); // Try decrypting with new key
+        deserialize(buffer, &ackMsg, currentSessionKey); 
         if (ackMsg.msgType == msgACK) {
             cout << "[Security] Handshake Successful! Secure Tunnel Established." << endl;
             return true;
@@ -192,7 +189,6 @@ bool connectToServer() {
         close(sock); sock = 0; return false;
     }
     
-    // PERFORM HANDSHAKE IMMEDIATELY AFTER CONNECTION
     if (!performHandshake()) {
         cerr << "[Error] Security Handshake Failed. Disconnecting." << endl;
         close(sock);
@@ -272,13 +268,12 @@ void sendMessage(Message& msg) {
         msg.timestamp = time(0);
     }
     
-    if (msg.msgType == msgViolation || msg.msgType == msgTamper) {
+    if (msg.msgType == msgViolation || msg.msgType == msgTamper || msg.msgType == msgViolationCompressed) {
         pendingACKs[msg.sequenceNumber] = make_pair(msg, time(0));
     }
 
     if (sock > 0) {
         char buffer[1024];
-        // Use Dynamic Session Key
         int msgSize = serialize(msg, buffer, currentSessionKey); 
         
         if (send(sock, buffer, msgSize, 0) < 0) { 
@@ -299,7 +294,6 @@ void handleIncomingACKs() {
     
     if (len > 0) {
         Message msg;
-        // Use Dynamic Session Key
         deserialize(buffer, &msg, currentSessionKey);
         if (msg.msgType == msgACK) {
             cout << "[System] ACK Received for Msg #" << msg.sequenceNumber << endl;
@@ -509,17 +503,31 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
 
     if (!isAllowed) {
         cout << "[UNAUTHORIZED] " << website << " detected!" << endl;
+        
+        // --- HUFFMAN COMPRESSION ATTEMPT ---
+        char compressedBuffer[512];
+        int compressedLen = 0;
+        studentHuffman.Compress(website.c_str(), website.length(), compressedBuffer, compressedLen);
+
         Message msg;
-        msg.msgType = msgViolation;
         msg.studentID = currentStudentID;
         strncpy(msg.studentName, currentStudentName, 31);
-        
         if (isTimeSynced) msg.timestamp = time(0) + clockOffset;
         else msg.timestamp = time(0);
-
         msg.sequenceNumber = 0; 
-        strncpy(msg.data, website.c_str(), sizeof(msg.data) - 1);
-        msg.dataLength = website.length();
+
+        // Check if compression was worth it
+        if (compressedLen < website.length()) {
+            cout << "  -> Compressing violation data (" << website.length() << "B -> " << compressedLen << "B)" << endl;
+            msg.msgType = msgViolationCompressed;
+            memcpy(msg.data, compressedBuffer, compressedLen);
+            msg.dataLength = compressedLen;
+        } else {
+            msg.msgType = msgViolation;
+            strncpy(msg.data, website.c_str(), sizeof(msg.data) - 1);
+            msg.dataLength = website.length();
+        }
+
         sendMessage(msg);
     }
 }

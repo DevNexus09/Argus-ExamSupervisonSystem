@@ -5,6 +5,7 @@
 #include <vector>
 #include <string>
 #include <utility>
+#include "huffman.h" // INCLUDE ADDED
 
 // Message Types
 #define msgConnected 1
@@ -15,12 +16,13 @@
 #define msgTimeRequest 6
 #define msgTimeResponse 7
 
+// NEW: Compressed Message Type
+#define msgViolationCompressed 20 
+
 // Handshake Message Types
 #define msgHandshakeInit 10
-#define msgHandshakeKey 11       // Payload: Public Key N and E
-#define msgHandshakeResponse 12  // Payload: RSA Encrypted Session Key
-
-// Static Key Removed - replaced by dynamic session keys
+#define msgHandshakeKey 11       
+#define msgHandshakeResponse 12  
 
 struct Message {
     uint8_t msgType;       
@@ -41,7 +43,6 @@ Message CreateMsg(uint8_t msgType, uint32_t studentID, uint32_t timestamp,
 void SecureEncrypt(char* data, int length, const std::string& key);
 void SecureDecrypt(char* data, int length, const std::string& key);
 
-// RSA Math Primitives
 long long Power(long long base, long long exp, long long mod);
 long long ModInverse(long long e, long long phi);
 void GenerateRSAKeys(long long& n, long long& e, long long& d);

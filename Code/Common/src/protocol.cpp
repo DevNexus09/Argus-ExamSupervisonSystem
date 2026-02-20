@@ -8,9 +8,13 @@
 
 using namespace std;
 
+// --- Global Huffman Instance ---
+// This ensures the tree is built once when the program starts
+HuffmanCoding huffmanCoder; 
+
 // --- Encryption Logic (RC4) ---
 void RC4_Logic(char* data, int length, const string& key) {
-    if (key.empty()) return; // Skip if no key provided (Handshake messages)
+    if (key.empty()) return;
 
     vector<int> S(256);
     for(int i=0; i<256; i++) S[i] = i;
@@ -84,8 +88,6 @@ bool IsPrime(long long n) {
 }
 
 void GenerateRSAKeys(long long& n, long long& e, long long& d) {
-    // 1. Generate Primes (Small range for demo performance, e.g., 100-1000)
-    // In production, these should be much larger.
     vector<long long> primes;
     for (int i = 100; i < 500; i++) {
         if (IsPrime(i)) primes.push_back(i);
@@ -98,13 +100,11 @@ void GenerateRSAKeys(long long& n, long long& e, long long& d) {
     n = p * q;
     long long phi = (p - 1) * (q - 1);
 
-    // 2. Choose E
     e = 3;
     while (GCD(e, phi) != 1) {
         e += 2;
     }
 
-    // 3. Compute D
     d = ModInverse(e, phi);
 }
 
@@ -136,13 +136,12 @@ int serialize(const Message& msg, char* buffer, const std::string& key) {
     int dataSize = msg.dataLength < 512 ? msg.dataLength : 512;
     memcpy(buffer + offset, msg.data, dataSize);
     
-    // Encrypt ONLY payload with the specific session key
-    // If key is empty (handshake), this does nothing
+    // Encrypt ONLY payload
     SecureEncrypt(buffer + offset, dataSize, key);
     
     offset += dataSize;
     
-    return offset; // Return EXACT size
+    return offset; 
 }
 
 int deserialize(const char* buffer, Message* msg, const std::string& key) {
@@ -176,13 +175,28 @@ int deserialize(const char* buffer, Message* msg, const std::string& key) {
     int dataSize = msg->dataLength < 512 ? msg->dataLength : 512;
     memcpy(msg->data, buffer + offset, dataSize);
 
-    // Decrypt ONLY payload
+    // 1. Decrypt Layer (RC4)
     SecureDecrypt(msg->data, dataSize, key);
+    
+    // 2. Decompression Layer (Huffman)
+    // If the message is compressed, decompress it IN PLACE so the app logic sees plaintext.
+    if (msg->msgType == msgViolationCompressed) {
+        char decompressedData[512];
+        int newLen = 0;
+        
+        huffmanCoder.Decompress(msg->data, dataSize, decompressedData, newLen);
+        
+        // Update the message content
+        memset(msg->data, 0, 512);
+        memcpy(msg->data, decompressedData, newLen);
+        msg->dataLength = newLen;
+        msg->msgType = msgViolation; // Restore type so Dashboard handles it normally
+    }
     
     offset += dataSize;
     
-    if (dataSize < 512) {
-        msg->data[dataSize] = '\0';
+    if (msg->dataLength < 512) {
+        msg->data[msg->dataLength] = '\0';
     }
     
     return offset;

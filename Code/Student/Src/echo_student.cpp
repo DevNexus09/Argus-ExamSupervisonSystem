@@ -12,6 +12,8 @@
 #include <netinet/if_ether.h>
 #include <netinet/ip.h>
 #include <netinet/udp.h>
+#include <netinet/tcp.h> // NEW: For TCP header parsing
+#include <cmath>         // NEW: For log2 calculations
 #include <limits.h>
 #include <map> 
 #include <ctime>
@@ -20,7 +22,7 @@
 #include <chrono>     
 #include "../../Common/include/protocol.h"
 #include "../../Common/include/trie.h"
-#include "../../Common/include/huffman.h" // INCLUDE ADDED
+#include "../../Common/include/huffman.h"
 
 using namespace std;
 
@@ -40,7 +42,7 @@ Trie whitelistTrie;
 bool running = true;
 string currentSessionKey = ""; 
 
-HuffmanCoding studentHuffman; // NEW: Huffman Instance
+HuffmanCoding studentHuffman;
 
 // Reliability Globals
 map<uint32_t, pair<Message, time_t>> pendingACKs; 
@@ -53,6 +55,14 @@ int64_t clockOffset = 0;
 time_t serverSyncTime = 0;
 std::chrono::steady_clock::time_point monotonicSyncTime;
 bool isTimeSynced = false;
+
+// --- NEW: Flow-Based Analysis Data Structures ---
+struct FlowData {
+    int packetCount = 0;
+    double totalEntropy = 0.0;
+    bool alerted = false;
+};
+map<string, FlowData> activeFlows;
 
 // --- FORWARD DECLARATIONS ---
 void signalHandler(int signum);
@@ -71,6 +81,7 @@ void loadWhitelist();
 void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet);
 void run_student_logic();   
 void sendWatchdogAlert();   
+double calculateShannonEntropy(const u_char* data, int length); // NEW
 
 // --- Implementations ---
 
@@ -103,19 +114,14 @@ void sendWatchdogAlert() {
     close(alert_sock);
 }
 
-// ---------------------------------------------------------
-// NEW: Handshake Protocol Implementation
-// ---------------------------------------------------------
 bool performHandshake() {
     cout << "[Security] Initiating Secure Handshake..." << endl;
     
-    // 1. Send Handshake Init
     Message initMsg = CreateMsg(msgHandshakeInit, currentStudentID, time(0), 0, NULL, 0);
     char buffer[1024];
     int size = serialize(initMsg, buffer, ""); 
     if (send(sock, buffer, size, 0) < 0) return false;
 
-    // 2. Receive Server Public Key (N, E)
     size = recv(sock, buffer, 1024, 0);
     if (size <= 0) return false;
     
@@ -131,7 +137,6 @@ bool performHandshake() {
     memcpy(&serverN, keyMsg.data, sizeof(long long));
     memcpy(&serverE, keyMsg.data + sizeof(long long), sizeof(long long));
 
-    // 3. Generate Random Session Key
     string chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
     currentSessionKey = "";
     srand(time(0));
@@ -139,7 +144,6 @@ bool performHandshake() {
 
     cout << "[Security] Generated Session Key: " << currentSessionKey << endl;
 
-    // 4. Encrypt Session Key using RSA
     char encryptedPayload[512];
     int payloadOffset = 0;
     
@@ -149,12 +153,10 @@ bool performHandshake() {
         payloadOffset += sizeof(long long);
     }
 
-    // 5. Send Encrypted Session Key
     Message responseMsg = CreateMsg(msgHandshakeResponse, currentStudentID, time(0), 0, encryptedPayload, payloadOffset);
     size = serialize(responseMsg, buffer, ""); 
     send(sock, buffer, size, 0);
 
-    // 6. Wait for Confirmation (ACK) encrypted with new Session Key
     size = recv(sock, buffer, 1024, 0);
     if (size > 0) {
         Message ackMsg;
@@ -467,68 +469,171 @@ void loadWhitelist() {
     cout << "[System] Whitelist loaded from " << loadedPath << " (" << count << " entries)." << endl;
 }
 
+// --- NEW: Calculates Shannon Entropy formula for the given payload ---
+double calculateShannonEntropy(const u_char* data, int length) {
+    if (length <= 0) return 0.0;
+    int counts[256] = {0};
+    
+    // Step 1: Frequency Analysis
+    for (int i = 0; i < length; ++i) {
+        counts[data[i]]++;
+    }
+    
+    double entropy = 0.0;
+    
+    // Step 2 & 3: Probability and Entropy Summation
+    for (int i = 0; i < 256; ++i) {
+        if (counts[i] > 0) {
+            double p = (double)counts[i] / length;
+            entropy -= p * log2(p);
+        }
+    }
+    return entropy;
+}
+
 void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
     int ip_header_offset = 14; 
+    if (header->caplen < ip_header_offset + sizeof(struct ip)) return;
+    
     struct ip *iph = (struct ip *)(packet + ip_header_offset);
     int ip_header_len = iph->ip_hl * 4;
     
-    struct udphdr *udph = (struct udphdr *)(packet + ip_header_offset + ip_header_len);
-    
-    #ifdef __APPLE__
-        if (ntohs(udph->uh_dport) != DNS_PORT) return;
-    #else
-        if (ntohs(udph->dest) != DNS_PORT) return;
-    #endif
+    if (header->caplen < ip_header_offset + ip_header_len) return;
 
-    int dns_offset = ip_header_offset + ip_header_len + 8;
-    int query_offset = dns_offset + 12;
-    string website = parseDNSName(packet, query_offset);
+    uint16_t sport = 0, dport = 0;
+    const u_char* payload = nullptr;
+    int payload_len = 0;
 
-    if (website.empty()) return;
-
-    string tempCheck = website;
-    bool isAllowed = false;
-
-    while (!tempCheck.empty()) {
-        if (Search(&whitelistTrie, tempCheck)) {
-            isAllowed = true;
-            break;
+    // --- Protocol Agnostic Payload Extraction ---
+    if (iph->ip_p == IPPROTO_UDP) {
+        if (header->caplen < ip_header_offset + ip_header_len + sizeof(struct udphdr)) return;
+        struct udphdr *udph = (struct udphdr *)(packet + ip_header_offset + ip_header_len);
+        
+        #ifdef __APPLE__
+            sport = ntohs(udph->uh_sport);
+            dport = ntohs(udph->uh_dport);
+            payload_len = ntohs(udph->uh_ulen) - 8;
+        #else
+            sport = ntohs(udph->source);
+            dport = ntohs(udph->dest);
+            payload_len = ntohs(udph->len) - 8;
+        #endif
+        
+        if (header->caplen >= ip_header_offset + ip_header_len + 8) {
+            payload = packet + ip_header_offset + ip_header_len + 8;
         }
+
+        // --- Original DNS Checking Logic ---
+        if (dport == DNS_PORT) {
+            int dns_offset = ip_header_offset + ip_header_len + 8;
+            int query_offset = dns_offset + 12;
+            
+            if (header->caplen > query_offset) {
+                int offset = query_offset;
+                string website = parseDNSName(packet, offset);
+
+                if (!website.empty()) {
+                    string tempCheck = website;
+                    bool isAllowed = false;
+
+                    while (!tempCheck.empty()) {
+                        if (Search(&whitelistTrie, tempCheck)) {
+                            isAllowed = true;
+                            break;
+                        }
+                        size_t firstDot = tempCheck.find('.');
+                        if (firstDot == string::npos) break;
+                        tempCheck = tempCheck.substr(firstDot + 1);
+                    }
+
+                    if (!isAllowed) {
+                        cout << "[UNAUTHORIZED] " << website << " detected!" << endl;
+                        
+                        char compressedBuffer[512];
+                        int compressedLen = 0;
+                        studentHuffman.Compress(website.c_str(), website.length(), compressedBuffer, compressedLen);
+
+                        Message msg;
+                        msg.studentID = currentStudentID;
+                        strncpy(msg.studentName, currentStudentName, 31);
+                        if (isTimeSynced) msg.timestamp = time(0) + clockOffset;
+                        else msg.timestamp = time(0);
+                        msg.sequenceNumber = 0; 
+
+                        if (compressedLen > 0 && compressedLen < website.length()) {
+                            cout << "  -> Compressing violation data (" << website.length() << "B -> " << compressedLen << "B)" << endl;
+                            msg.msgType = msgViolationCompressed;
+                            memcpy(msg.data, compressedBuffer, compressedLen);
+                            msg.dataLength = compressedLen;
+                        } else {
+                            msg.msgType = msgViolation;
+                            strncpy(msg.data, website.c_str(), sizeof(msg.data) - 1);
+                            msg.dataLength = website.length();
+                        }
+                        sendMessage(msg);
+                    }
+                }
+            }
+        }
+    } 
+    else if (iph->ip_p == IPPROTO_TCP) {
+        if (header->caplen < ip_header_offset + ip_header_len + sizeof(struct tcphdr)) return;
+        struct tcphdr *tcph = (struct tcphdr *)(packet + ip_header_offset + ip_header_len);
         
-        size_t firstDot = tempCheck.find('.');
-        if (firstDot == string::npos) break;
-        
-        tempCheck = tempCheck.substr(firstDot + 1);
+        #ifdef __APPLE__
+            sport = ntohs(tcph->th_sport);
+            dport = ntohs(tcph->th_dport);
+            int tcp_header_len = tcph->th_off * 4;
+        #else
+            sport = ntohs(tcph->source);
+            dport = ntohs(tcph->dest);
+            int tcp_header_len = tcph->doff * 4;
+        #endif
+
+        if (header->caplen >= ip_header_offset + ip_header_len + tcp_header_len) {
+            payload = packet + ip_header_offset + ip_header_len + tcp_header_len;
+            payload_len = header->caplen - (ip_header_offset + ip_header_len + tcp_header_len);
+        }
     }
 
-    if (!isAllowed) {
-        cout << "[UNAUTHORIZED] " << website << " detected!" << endl;
+    // --- NEW: Shannon Entropy & Flow-Based Analysis Engine ---
+    if (payload_len > 0 && payload != nullptr) {
+        char dest_ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &(iph->ip_dst), dest_ip, INET_ADDRSTRLEN);
         
-        // --- HUFFMAN COMPRESSION ATTEMPT ---
-        char compressedBuffer[512];
-        int compressedLen = 0;
-        studentHuffman.Compress(website.c_str(), website.length(), compressedBuffer, compressedLen);
-
-        Message msg;
-        msg.studentID = currentStudentID;
-        strncpy(msg.studentName, currentStudentName, 31);
-        if (isTimeSynced) msg.timestamp = time(0) + clockOffset;
-        else msg.timestamp = time(0);
-        msg.sequenceNumber = 0; 
-
-        // Check if compression was worth it
-        if (compressedLen < website.length()) {
-            cout << "  -> Compressing violation data (" << website.length() << "B -> " << compressedLen << "B)" << endl;
-            msg.msgType = msgViolationCompressed;
-            memcpy(msg.data, compressedBuffer, compressedLen);
-            msg.dataLength = compressedLen;
-        } else {
-            msg.msgType = msgViolation;
-            strncpy(msg.data, website.c_str(), sizeof(msg.data) - 1);
-            msg.dataLength = website.length();
+        // Exemption: If Dest IP is manually whitelisted, ignore
+        if (Search(&whitelistTrie, string(dest_ip))) {
+            return;
         }
 
-        sendMessage(msg);
+        // Create connection signature FlowKey
+        string flowKey = string(dest_ip) + ":" + to_string(dport);
+        
+        double entropy = calculateShannonEntropy(payload, payload_len);
+        FlowData& flow = activeFlows[flowKey];
+        
+        // Maintain a rolling average of entropy for the first 20 packets to avoid false positives
+        if (!flow.alerted && flow.packetCount < 20) {
+            flow.packetCount++;
+            flow.totalEntropy += entropy;
+            
+            // Wait until we have a solid flow baseline (10 packets)
+            if (flow.packetCount >= 10) {
+                double avgEntropy = flow.totalEntropy / flow.packetCount;
+                
+                // High Entropy Threshold (7.8+) indicates high randomness = Encryption / VPN
+                if (avgEntropy > 7.8) {
+                    flow.alerted = true; 
+                    
+                    string alertMsg = "Potential VPN/Encrypted Tunnel Detected. Destination: " + string(dest_ip) + ". Sustained Entropy: " + to_string(avgEntropy);
+                    cout << "\n[SECURITY ALERT] " << alertMsg << endl;
+                    
+                    Message msg = CreateMsg(msgViolation, currentStudentID, time(0), 0, alertMsg.c_str(), alertMsg.length());
+                    strncpy(msg.studentName, currentStudentName, 31);
+                    sendMessage(msg);
+                }
+            }
+        }
     }
 }
 
@@ -560,10 +665,13 @@ void run_student_logic() {
     }
 
     struct bpf_program fp;
-    if (pcap_compile(handle, &fp, "udp port 53", 0, PCAP_NETMASK_UNKNOWN) == -1) exit(EXIT_FAILURE);
+    // NEW: Capture general IP traffic, but ignore our own connection back to the Supervisor to prevent loops!
+    string bpf_filter = "ip and not (host " + string(SERVER_IP) + " and port " + to_string(PORT) + ")";
+    
+    if (pcap_compile(handle, &fp, bpf_filter.c_str(), 0, PCAP_NETMASK_UNKNOWN) == -1) exit(EXIT_FAILURE);
     if (pcap_setfilter(handle, &fp) == -1) exit(EXIT_FAILURE);
 
-    cout << "[System] Monitoring DNS traffic..." << endl;
+    cout << "[System] Monitoring Network Traffic and Entropy Behaviors..." << endl;
     
     while (running) {
         struct pcap_pkthdr *header;

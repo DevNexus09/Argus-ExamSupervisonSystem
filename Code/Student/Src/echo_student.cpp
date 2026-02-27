@@ -12,8 +12,8 @@
 #include <netinet/if_ether.h>
 #include <netinet/ip.h>
 #include <netinet/udp.h>
-#include <netinet/tcp.h> // NEW: For TCP header parsing
-#include <cmath>         // NEW: For log2 calculations
+#include <netinet/tcp.h> 
+#include <cmath>         
 #include <limits.h>
 #include <map> 
 #include <ctime>
@@ -39,6 +39,7 @@ pcap_t *handle = nullptr;
 uint32_t currentStudentID = 0;
 char currentStudentName[32];
 Trie whitelistTrie;
+Trie blacklistTrie; // NEW: Trie for Deep Packet Inspection keywords
 bool running = true;
 string currentSessionKey = ""; 
 
@@ -56,7 +57,7 @@ time_t serverSyncTime = 0;
 std::chrono::steady_clock::time_point monotonicSyncTime;
 bool isTimeSynced = false;
 
-// --- NEW: Flow-Based Analysis Data Structures ---
+// --- Flow-Based Analysis Data Structures ---
 struct FlowData {
     int packetCount = 0;
     double totalEntropy = 0.0;
@@ -78,10 +79,12 @@ string findActiveInterface();
 string parseDNSName(const u_char* packet, int& offset);
 string trim(const string& str);
 void loadWhitelist();
+void loadBlacklist(); // NEW
 void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet);
 void run_student_logic();   
 void sendWatchdogAlert();   
-double calculateShannonEntropy(const u_char* data, int length); // NEW
+double calculateShannonEntropy(const u_char* data, int length);
+string extractSNI(const u_char* payload, int payload_len); // NEW
 
 // --- Implementations ---
 
@@ -469,7 +472,52 @@ void loadWhitelist() {
     cout << "[System] Whitelist loaded from " << loadedPath << " (" << count << " entries)." << endl;
 }
 
-// --- NEW: Calculates Shannon Entropy formula for the given payload ---
+// --- NEW: Load Blacklist for Deep Packet Inspection (Aho-Corasick) ---
+void loadBlacklist() {
+    const char* paths[] = {
+        "Code/Student/config/blacklist.txt",
+        "../config/blacklist.txt",
+        "blacklist.txt"
+    };
+
+    ifstream file;
+    string loadedPath = "";
+
+    for (const char* path : paths) {
+        file.open(path);
+        if (file.is_open()) {
+            loadedPath = path;
+            break;
+        }
+        file.clear();
+    }
+
+    if (!file.is_open()) {
+        cout << "[System] Blacklist file not found, loading defaults for DPI." << endl;
+        Insert(&blacklistTrie, "chatgpt");
+        Insert(&blacklistTrie, "facebook");
+        Insert(&blacklistTrie, "tiktok");
+        Insert(&blacklistTrie, "instagram");
+        Insert(&blacklistTrie, "discord");
+    } else {
+        string line;
+        int count = 0;
+        while (getline(file, line)) {
+            string keyword = trim(line);
+            if (keyword.empty() || keyword[0] == '#' || keyword[0] == '[') continue;
+            Insert(&blacklistTrie, keyword);
+            count++;
+        }
+        file.close();
+        cout << "[System] Blacklist loaded from " << loadedPath << " (" << count << " entries)." << endl;
+    }
+
+    // Build failure links for Aho-Corasick Automaton
+    BuildFailureLinks(&blacklistTrie);
+    cout << "[System] Aho-Corasick Automaton Built for DPI Payload Scanning." << endl;
+}
+
+// --- Calculates Shannon Entropy formula for the given payload ---
 double calculateShannonEntropy(const u_char* data, int length) {
     if (length <= 0) return 0.0;
     int counts[256] = {0};
@@ -489,6 +537,67 @@ double calculateShannonEntropy(const u_char* data, int length) {
         }
     }
     return entropy;
+}
+
+// --- NEW: TLS Deep Packet Inspection (Extract Server Name Indication) ---
+string extractSNI(const u_char* payload, int payload_len) {
+    if (payload_len < 43) return ""; // Minimum size for ClientHello
+    if (payload[0] != 0x16 || payload[1] != 0x03) return ""; // Not a TLS Handshake
+
+    // Skip Record Header (5 bytes)
+    int pos = 5;
+    if (pos >= payload_len || payload[pos] != 0x01) return ""; // Not ClientHello
+
+    // Skip Handshake Header (4 bytes) + Client Version (2 bytes) + Random (32 bytes)
+    pos += 38;
+    if (pos >= payload_len) return "";
+
+    // Session ID length
+    int session_id_len = payload[pos++];
+    pos += session_id_len;
+    if (pos >= payload_len - 2) return "";
+
+    // Cipher Suites length
+    int cipher_suites_len = (payload[pos] << 8) | payload[pos+1];
+    pos += 2 + cipher_suites_len;
+    if (pos >= payload_len - 1) return "";
+
+    // Compression Methods length
+    int comp_methods_len = payload[pos++];
+    pos += comp_methods_len;
+    if (pos >= payload_len - 2) return "";
+
+    // Extensions Length
+    int ext_total_len = (payload[pos] << 8) | payload[pos+1];
+    pos += 2;
+
+    int end_pos = pos + ext_total_len;
+    if (end_pos > payload_len) end_pos = payload_len;
+
+    while (pos < end_pos - 4) {
+        int ext_type = (payload[pos] << 8) | payload[pos+1];
+        int ext_len = (payload[pos+2] << 8) | payload[pos+3];
+        pos += 4;
+
+        if (ext_type == 0x0000) { // Server Name (SNI)
+            if (pos + 2 > end_pos) break;
+            int list_len = (payload[pos] << 8) | payload[pos+1];
+            pos += 2;
+            if (pos + 1 > end_pos) break;
+            int name_type = payload[pos++];
+            if (name_type == 0x00) { // host_name
+                if (pos + 2 > end_pos) break;
+                int name_len = (payload[pos] << 8) | payload[pos+1];
+                pos += 2;
+                if (pos + name_len > end_pos) break;
+                string sni((const char*)(payload + pos), name_len);
+                return sni;
+            }
+        } else {
+            pos += ext_len; // Skip this extension
+        }
+    }
+    return "";
 }
 
 void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
@@ -547,7 +656,7 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
                     }
 
                     if (!isAllowed) {
-                        cout << "[UNAUTHORIZED] " << website << " detected!" << endl;
+                        cout << "[UNAUTHORIZED DNS] " << website << " detected!" << endl;
                         
                         char compressedBuffer[512];
                         int compressedLen = 0;
@@ -596,7 +705,6 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
         }
     }
 
-    // --- NEW: Shannon Entropy & Flow-Based Analysis Engine ---
     if (payload_len > 0 && payload != nullptr) {
         char dest_ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &(iph->ip_dst), dest_ip, INET_ADDRSTRLEN);
@@ -606,25 +714,74 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
             return;
         }
 
-        // Create connection signature FlowKey
+        // --- NEW: Deep Packet Inspection & Aho-Corasick Analysis ---
+        if (iph->ip_p == IPPROTO_TCP && (dport == 443 || sport == 443)) {
+            
+            // 1. SNI Extraction (TLS ClientHello Parsing)
+            if (dport == 443) {
+                string sni = extractSNI(payload, payload_len);
+                if (!sni.empty()) {
+                    string tempCheck = sni;
+                    bool isAllowed = false;
+                    while (!tempCheck.empty()) {
+                        if (Search(&whitelistTrie, tempCheck)) {
+                            isAllowed = true;
+                            break;
+                        }
+                        size_t firstDot = tempCheck.find('.');
+                        if (firstDot == string::npos) break;
+                        tempCheck = tempCheck.substr(firstDot + 1);
+                    }
+                    
+                    if (!isAllowed) {
+                        cout << "[UNAUTHORIZED HTTPS SNI] " << sni << " detected!" << endl;
+                        char compressedBuffer[512];
+                        int compressedLen = 0;
+                        studentHuffman.Compress(sni.c_str(), sni.length(), compressedBuffer, compressedLen);
+                        Message msg;
+                        msg.studentID = currentStudentID;
+                        strncpy(msg.studentName, currentStudentName, 31);
+                        if (isTimeSynced) msg.timestamp = time(0) + clockOffset;
+                        else msg.timestamp = time(0);
+                        msg.sequenceNumber = 0; 
+
+                        if (compressedLen > 0 && compressedLen < sni.length()) {
+                            msg.msgType = msgViolationCompressed;
+                            memcpy(msg.data, compressedBuffer, compressedLen);
+                            msg.dataLength = compressedLen;
+                        } else {
+                            msg.msgType = msgViolation;
+                            strncpy(msg.data, sni.c_str(), sizeof(msg.data) - 1);
+                            msg.dataLength = sni.length();
+                        }
+                        sendMessage(msg);
+                    }
+                }
+            }
+
+            // 2. Aho-Corasick O(n) Payload Automaton Scanning
+            if (AhoCorasickSearch(&blacklistTrie, (const char*)payload, payload_len)) {
+                string alertMsg = "DPI Blocked Content. Dest IP: " + string(dest_ip);
+                cout << "\n[SECURITY ALERT] Deep Packet Inspection Flagged Raw Payload Content!" << endl;
+                Message msg = CreateMsg(msgViolation, currentStudentID, time(0), 0, alertMsg.c_str(), alertMsg.length());
+                strncpy(msg.studentName, currentStudentName, 31);
+                sendMessage(msg);
+            }
+        }
+
+        // --- Shannon Entropy & Flow-Based Analysis Engine (Existing) ---
         string flowKey = string(dest_ip) + ":" + to_string(dport);
-        
         double entropy = calculateShannonEntropy(payload, payload_len);
         FlowData& flow = activeFlows[flowKey];
         
-        // Maintain a rolling average of entropy for the first 20 packets to avoid false positives
         if (!flow.alerted && flow.packetCount < 20) {
             flow.packetCount++;
             flow.totalEntropy += entropy;
             
-            // Wait until we have a solid flow baseline (10 packets)
             if (flow.packetCount >= 10) {
                 double avgEntropy = flow.totalEntropy / flow.packetCount;
-                
-                // High Entropy Threshold (7.8+) indicates high randomness = Encryption / VPN
                 if (avgEntropy > 7.8) {
                     flow.alerted = true; 
-                    
                     string alertMsg = "Potential VPN/Encrypted Tunnel Detected. Destination: " + string(dest_ip) + ". Sustained Entropy: " + to_string(avgEntropy);
                     cout << "\n[SECURITY ALERT] " << alertMsg << endl;
                     
@@ -642,6 +799,7 @@ void run_student_logic() {
 
     connectToServer();
     loadWhitelist();
+    loadBlacklist(); // NEW: Load DPI keyword blacklist
     
     synchronizeClock();
 
@@ -665,13 +823,12 @@ void run_student_logic() {
     }
 
     struct bpf_program fp;
-    // NEW: Capture general IP traffic, but ignore our own connection back to the Supervisor to prevent loops!
     string bpf_filter = "ip and not (host " + string(SERVER_IP) + " and port " + to_string(PORT) + ")";
     
     if (pcap_compile(handle, &fp, bpf_filter.c_str(), 0, PCAP_NETMASK_UNKNOWN) == -1) exit(EXIT_FAILURE);
     if (pcap_setfilter(handle, &fp) == -1) exit(EXIT_FAILURE);
 
-    cout << "[System] Monitoring Network Traffic and Entropy Behaviors..." << endl;
+    cout << "[System] Monitoring Network Traffic (DNS, SNI, DPI & Entropy)..." << endl;
     
     while (running) {
         struct pcap_pkthdr *header;

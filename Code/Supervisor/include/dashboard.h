@@ -6,7 +6,13 @@
 #include <vector>
 #include <cstdint>
 #include <ctime>
+#include <mutex>
 #include "../../Common/include/priorityqueue.h"
+
+struct StudentData {
+    std::string name;
+    bool isConnected;
+};
 
 class Dashboard {
 private:
@@ -14,28 +20,35 @@ private:
     int totalViolations;
     std::time_t lastRefreshTime;
     
-    // Data storage
-    std::map<std::string, int> studentViolationCounts; // Helper to track counts before inserting to PQ
+    std::map<std::string, int> studentViolationCounts;
     std::map<std::string, int> websiteViolationCounts;
-    PriorityQueue* studentPQ; // Using the project's custom Priority Queue
+    PriorityQueue* studentPQ;
+    std::string latestLog;
     
-    std::string latestLog; // To display the last system event
+    std::map<uint32_t, StudentData> studentRegistry; 
+    
+    bool showAttendancePopup;
+    bool showViolationPopup;
+    bool showExitPopup; // FEATURE 2: For the new centered exit modal
+
+    std::mutex dataMutex;
 
 public:
+    bool systemShouldExit; // FEATURE 2: Main loop break condition
+
     Dashboard();
     ~Dashboard();
 
-    // Data Updates
     void updateConnection(bool connected, const std::string& ip = "");
-    void recordViolation(uint32_t studentID, const std::string& website);
+    void registerStudent(uint32_t studentID, const std::string& name); 
+    void setStudentConnection(uint32_t studentID, bool status);        
     
-    // New Feature Methods
+    void recordViolation(uint32_t studentID, const std::string& website);
     void updateHeartbeat(uint32_t studentID);
     void recordTampering(uint32_t studentID);
     
-    // Rendering
-    void render();
-    bool shouldRefresh(); // Checks if 5 seconds have passed
+    bool shouldRefresh();
+    void renderGUI();
 };
 
 #endif

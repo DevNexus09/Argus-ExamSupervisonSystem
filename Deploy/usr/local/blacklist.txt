@@ -1,0 +1,5 @@
+# blacklist.txt - DPI Blocked Keywords
+chatgpt
+facebook
+tiktok
+torrent

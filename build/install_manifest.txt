@@ -1,5 +1,0 @@
-/usr/local/bin/supervisor_app
-/usr/local/bin/student_agent
-/usr/local/./whitelist.txt
-/usr/local/./blacklist.txt
-/usr/local/./studentConfig.txt

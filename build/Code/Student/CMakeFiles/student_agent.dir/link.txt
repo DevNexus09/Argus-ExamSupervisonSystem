@@ -1,1 +1,0 @@
-/usr/bin/c++  -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/student_agent.dir/Src/echo_student.cpp.o -o student_agent   -L/opt/homebrew/lib  -Wl,-rpath,/opt/homebrew/lib ../Common/libArgusCommon.a /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib/libpcap.tbd -framework OpenGL /opt/homebrew/lib/libglfw.3.4.dylib

@@ -39,5 +39,6 @@
         "typeinfo": "cpp",
         "variant": "cpp",
         "vector": "cpp"
-    }
+    },
+    "cmake.sourceDirectory": "/Users/cipherpirate/Projects/ARGUS/Code/Supervisor"
 }

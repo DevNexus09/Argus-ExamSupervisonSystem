@@ -16,13 +16,6 @@ Developed for the **Software Project Lab 1** at the **Institute of Information T
 
 ---
 
-### 📦 Modern Deployment
-Deployment has been modernized for professional cross-platform reliability:
-* **CMake Integration:** Automated dependency discovery for libpcap, GLFW, and OpenGL.
-* **Streamlined Makefiles:** Modular build system for clean installation of both the Student Agent and Supervisor Server.
-
----
-
 ### 🧠 The Algorithmic Engine
 Argus is built on highly optimized data structures to ensure enforcement happens with zero network latency:
 * **String Matching:** **Aho-Corasick Automaton** (Trie + BFS failure links) for O(n) simultaneous multi-pattern scanning of raw payloads.
@@ -37,17 +30,6 @@ Argus is built on highly optimized data structures to ensure enforcement happens
 * **Supervisor Server (`echo_supervisor.cpp`):** The command center. Processes handshakes, decrypts telemetry, and provides a real-time dark-themed dashboard.
 * **Student Agent (`echo_student.cpp`):** A lightweight background sniffer with a **watchdog thread** that sends immediate tamper alerts if the process is terminated.
 
----
-
-### 🛠️ Quick Start
 **Prerequisites:** C++17, libpcap, GLFW, OpenGL 3.2+.
-
-1. **Build:**
-   ```bash
-   mkdir build && cd build
-   cmake ..
-   make install
-2. Supervisor: Launch ./bin/supervisor_app.
-3. Student: Launch sudo ./bin/student_agent (requires root for packet sniffing).
 
 Developed for excellence at IIT, University of Dhaka.

@@ -56,7 +56,6 @@ void saveReport() {
 
 std::atomic<bool> isServerRunning(true);
 
-// BACKGROUND THREAD: Handles all socket connections
 void NetworkLoop(Dashboard& dashboard) {
     int master_socket, new_socket, client_socket[MAX_CLIENTS], max_sd, sd, valread;
     struct sockaddr_in address;
@@ -237,7 +236,6 @@ void NetworkLoop(Dashboard& dashboard) {
     }
 }
 
-// PREMIUM DARK THEME
 void SetupImGuiStyle() {
     ImGuiStyle& style = ImGui::GetStyle();
     
@@ -278,7 +276,6 @@ void SetupImGuiStyle() {
     colors[ImGuiCol_TableRowBgAlt]        = ImVec4(0.11f, 0.11f, 0.12f, 1.00f);
 }
 
-// MAIN UI THREAD
 int main() {
     srand(time(0)); 
 

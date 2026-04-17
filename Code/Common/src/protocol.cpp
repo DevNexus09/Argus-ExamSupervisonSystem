@@ -8,11 +8,9 @@
 
 using namespace std;
 
-// --- Global Huffman Instance ---
-// This ensures the tree is built once when the program starts
 HuffmanCoding huffmanCoder; 
 
-// --- Encryption Logic (RC4) ---
+// Encryption Logic (RC4)
 void RC4_Logic(char* data, int length, const string& key) {
     if (key.empty()) return;
 
@@ -43,7 +41,7 @@ void SecureDecrypt(char* data, int length, const string& key) {
     RC4_Logic(data, length, key);
 }
 
-// --- RSA Math Implementations ---
+// RSA Math Implementations
 
 long long Power(long long base, long long exp, long long mod) {
     long long res = 1;
@@ -108,7 +106,6 @@ void GenerateRSAKeys(long long& n, long long& e, long long& d) {
     d = ModInverse(e, phi);
 }
 
-// --- Serialization ---
 int serialize(const Message& msg, char* buffer, const std::string& key) {
     int offset = 0;
     
@@ -175,22 +172,20 @@ int deserialize(const char* buffer, Message* msg, const std::string& key) {
     int dataSize = msg->dataLength < 512 ? msg->dataLength : 512;
     memcpy(msg->data, buffer + offset, dataSize);
 
-    // 1. Decrypt Layer (RC4)
+    // Decrypt Layer (RC4)
     SecureDecrypt(msg->data, dataSize, key);
     
-    // 2. Decompression Layer (Huffman)
-    // If the message is compressed, decompress it IN PLACE so the app logic sees plaintext.
+    // Decompression Layer (Huffman)
     if (msg->msgType == msgViolationCompressed) {
         char decompressedData[512];
         int newLen = 0;
         
         huffmanCoder.Decompress(msg->data, dataSize, decompressedData, newLen);
-        
-        // Update the message content
+    
         memset(msg->data, 0, 512);
         memcpy(msg->data, decompressedData, newLen);
         msg->dataLength = newLen;
-        msg->msgType = msgViolation; // Restore type so Dashboard handles it normally
+        msg->msgType = msgViolation;
     }
     
     offset += dataSize;

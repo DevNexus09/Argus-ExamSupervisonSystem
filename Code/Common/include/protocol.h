@@ -5,9 +5,8 @@
 #include <vector>
 #include <string>
 #include <utility>
-#include "huffman.h" // INCLUDE ADDED
+#include "huffman.h"
 
-// Message Types
 #define msgConnected 1
 #define msgViolation 2
 #define msgACK 3
@@ -15,11 +14,7 @@
 #define msgTamper 5     
 #define msgTimeRequest 6
 #define msgTimeResponse 7
-
-// NEW: Compressed Message Type
 #define msgViolationCompressed 20 
-
-// Handshake Message Types
 #define msgHandshakeInit 10
 #define msgHandshakeKey 11       
 #define msgHandshakeResponse 12  
@@ -34,7 +29,6 @@ struct Message {
     char data[512];
 };
 
-// Function Prototypes
 int serialize(const Message& msg, char* buffer, const std::string& key);
 int deserialize(const char* buffer, Message* msg, const std::string& key);
 Message CreateMsg(uint8_t msgType, uint32_t studentID, uint32_t timestamp, 

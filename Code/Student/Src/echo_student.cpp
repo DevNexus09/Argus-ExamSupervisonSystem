@@ -35,14 +35,12 @@
 
 using namespace std;
 
-// --- Config ---
 #define SERVER_IP "127.0.0.1"
 #define PORT 8080
 #define DNS_PORT 53
 #define WHITELIST_PATH "../config/whitelist.txt" 
 #define HEARTBEAT_INTERVAL 30
 
-// --- Globals ---
 int sock = 0;
 pcap_t *handle = nullptr;
 uint32_t currentStudentID = 0;
@@ -53,19 +51,14 @@ string currentSessionKey = "";
 
 HuffmanCoding studentHuffman;
 
-// Reliability Globals
 map<uint32_t, pair<Message, time_t>> pendingACKs; 
 uint32_t globalSequenceNum = 0;
 time_t lastHeartbeatTime = 0;
 time_t lastCheckTime = 0;
-
-// Time Synchronization Globals
 int64_t clockOffset = 0; 
 time_t serverSyncTime = 0;
 std::chrono::steady_clock::time_point monotonicSyncTime;
 bool isTimeSynced = false;
-
-// UI & Threading Globals
 std::atomic<bool> isMonitoring(false);
 std::atomic<bool> running(true);
 std::atomic<bool> threadCrashed(false); // Thread-based watchdog trigger
@@ -82,7 +75,6 @@ std::string getStatus() {
     return studentStatus;
 }
 
-// --- Flow-Based Analysis Data Structures ---
 struct FlowData {
     int packetCount = 0;
     double totalEntropy = 0.0;
@@ -90,8 +82,6 @@ struct FlowData {
 };
 map<string, FlowData> activeFlows;
 
-
-// --- Implementations ---
 
 void signalHandler(int signum) {
     cout << "\n[System] Stopping Student Client..." << endl;
@@ -101,7 +91,7 @@ void signalHandler(int signum) {
     }
 }
 
-// RESTORED: Standalone Watchdog Alert Function
+// Standalone Watchdog Alert Function
 void sendWatchdogAlert() {
     int alert_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (alert_sock < 0) return;
@@ -175,7 +165,7 @@ bool performHandshake() {
     }
 
     Message responseMsg = CreateMsg(msgHandshakeResponse, currentStudentID, time(0), 0, encryptedPayload, payloadOffset);
-    strncpy(responseMsg.studentName, currentStudentName, 31); // BUG 1 FIX: Send name on Response
+    strncpy(responseMsg.studentName, currentStudentName, 31);
     size = serialize(responseMsg, buffer, ""); 
     send(sock, buffer, size, 0);
 
@@ -361,7 +351,7 @@ void checkHeartbeat() {
     time_t now = time(0);
     if (difftime(now, lastHeartbeatTime) >= HEARTBEAT_INTERVAL) {
         Message msg = CreateMsg(msgHeartbeat, currentStudentID, now, 0, NULL, 0);
-        strncpy(msg.studentName, currentStudentName, 31); // BUG 1 FIX
+        strncpy(msg.studentName, currentStudentName, 31);
         sendMessage(msg);
         lastHeartbeatTime = now;
     }
@@ -382,7 +372,7 @@ void checkTampering() {
         string alertMsg = "System Time Mismatch (Drift: " + to_string(drift) + "s)";
         
         Message msg = CreateMsg(msgTamper, currentStudentID, trustedTime, 0, alertMsg.c_str(), alertMsg.length());
-        strncpy(msg.studentName, currentStudentName, 31); // BUG 1 FIX
+        strncpy(msg.studentName, currentStudentName, 31);
         sendMessage(msg);
         
         lastCheckTime = time(0); 
@@ -804,7 +794,6 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
     }
 }
 
-// RESTORED logic exactly as run_student_logic, wrapped for thread usage
 void run_student_logic_thread() {
     try {
         setStatus("Connecting to Server...");
@@ -871,26 +860,22 @@ void run_student_logic_thread() {
         pcap_close(handle);
         if (sock > 0) close(sock);
     } catch (...) {
-        // If thread crashes, trigger watchdog
         threadCrashed = true; 
     }
 }
 
-// Watchdog monitor running in parallel to UI and Network thread
 void WatchdogThread() {
     while (running) {
         if (threadCrashed) {
             cout << "\n[ALERT] Worker Thread killed! Sending Tamper Alert..." << endl;
             sendWatchdogAlert(); 
-            threadCrashed = false; // Reset flag or attempt restart
+            threadCrashed = false;
         }
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 }
 
-// ============================================================================
-// HACKER AESTHETIC LOGIN UI
-// ============================================================================
+// UI
 char inputName[256] = "";
 char inputId[256] = "";
 
@@ -898,7 +883,6 @@ void RenderStudentLoginWindow() {
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
 
-    // Apply the pure black, sharp edges, white borders, neon green theme
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.5f); 
@@ -966,7 +950,7 @@ void RenderStudentLoginWindow() {
 }
 
 
-// MAIN UI THREAD
+// MAIN UI
 int main() {
     cout << "--- ARGUS STUDENT CLIENT (SECURE) ---" << endl;
 
@@ -985,7 +969,7 @@ int main() {
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGui::StyleColorsDark(); // Base dark theme for monitoring state
+    ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 150");
 
@@ -1001,7 +985,6 @@ int main() {
         if (!isMonitoring) {
             RenderStudentLoginWindow();
         } else {
-            // Logged in: Active Monitoring UI (Sleek Dark Theme)
             ImGui::SetNextWindowPos(ImVec2(0, 0));
             ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
             ImGui::Begin("Active Monitoring", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
@@ -1021,7 +1004,6 @@ int main() {
             ImGui::Spacing(); ImGui::Spacing(); ImGui::Spacing();
             ImGui::TextWrapped("WARNING: Do not close this application. Secure exam monitoring is currently active in the background. Exiting will trigger a tamper alert to the supervisor.");
             
-            // FEATURE 1 FIX: Exit Button added directly to the Student Dashboard
             ImGui::SetCursorPosY(ImGui::GetWindowSize().y - 60);
             ImGui::Separator();
             ImGui::Spacing();
@@ -1041,7 +1023,7 @@ int main() {
         int display_w, display_h;
         glfwGetFramebufferSize(window, &display_w, &display_h);
         glViewport(0, 0, display_w, display_h);
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f); // Pure black clear color
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(window);

@@ -29,12 +29,12 @@ private:
     
     bool showAttendancePopup;
     bool showViolationPopup;
-    bool showExitPopup; // FEATURE 2: For the new centered exit modal
+    bool showExitPopup;
 
     std::mutex dataMutex;
 
 public:
-    bool systemShouldExit; // FEATURE 2: Main loop break condition
+    bool systemShouldExit;
 
     Dashboard();
     ~Dashboard();

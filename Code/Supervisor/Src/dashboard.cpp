@@ -9,9 +9,6 @@
 
 using namespace std;
 
-// ============================================================================
-// STANDALONE NATIVE PDF GENERATOR (No external libraries required)
-// ============================================================================
 static void GeneratePDF(const string& title, const vector<string>& headers, const vector<vector<string>>& data, const string& filename) {
     ofstream file(filename, ios::binary);
     if(!file.is_open()) return;
@@ -56,19 +53,16 @@ static void GeneratePDF(const string& title, const vector<string>& headers, cons
         return s;
     };
 
-    // Draw Title
     stream << "BT\n/F1 18 Tf\n50 " << totalHeight - 50 << " Td\n(" << esc(title) << ") Tj\nET\n";
     
     stream << "BT\n/F1 12 Tf\n";
     int y = totalHeight - 90;
     
-    // Draw Headers
     string headerLine = pad(headers[0], 10) + pad(headers[1], 20) + pad(headers[2], 40);
     if(headers.size() > 3) headerLine += pad(headers[3], 20);
 
     stream << "50 " << y << " Td\n(" << esc(headerLine) << ") Tj\n";
     
-    // Draw Rows
     for(auto& row : data) {
         string rowLine = pad(row[0], 10) + pad(row[1], 20) + pad(row[2], 40);
         if(row.size() > 3) rowLine += pad(row[3], 20);
@@ -95,7 +89,6 @@ static void GeneratePDF(const string& title, const vector<string>& headers, cons
     file << "startxref\n" << xrefOffset << "\n%%EOF\n";
     file.close();
 }
-// ============================================================================
 
 
 Dashboard::Dashboard() {
@@ -179,9 +172,6 @@ void Dashboard::renderGUI() {
     ImGuiWindowFlags winFlags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize;
     ImVec2 winSize = ImVec2(400, 300);
 
-    // ==========================================
-    // WIDGET 1: SYSTEM OVERVIEW
-    // ==========================================
     ImGui::SetNextWindowSize(winSize, ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(40, 40), ImGuiCond_FirstUseEver); 
     ImGui::Begin("📊 System Overview", nullptr, winFlags);
@@ -205,9 +195,6 @@ void Dashboard::renderGUI() {
 
     ImGui::End();
 
-    // ==========================================
-    // WIDGET 2: TOP 10 VIOLATORS
-    // ==========================================
     ImGui::SetNextWindowSize(winSize, ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(460, 40), ImGuiCond_FirstUseEver);
     ImGui::Begin("⚠️ Top Violators", nullptr, winFlags);
@@ -236,9 +223,6 @@ void Dashboard::renderGUI() {
     }
     ImGui::End();
 
-    // ==========================================
-    // WIDGET 3: RESTRICTED SITES
-    // ==========================================
     ImGui::SetNextWindowSize(winSize, ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(40, 360), ImGuiCond_FirstUseEver);
     ImGui::Begin("🚫 Restricted Sites Accessed", nullptr, winFlags);
@@ -270,9 +254,6 @@ void Dashboard::renderGUI() {
     }
     ImGui::End();
 
-    // ==========================================
-    // WIDGET 4: SYSTEM LOGS
-    // ==========================================
     ImGui::SetNextWindowSize(winSize, ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(460, 360), ImGuiCond_FirstUseEver);
     ImGui::Begin("📝 Live Event Log", nullptr, winFlags);
@@ -293,10 +274,6 @@ void Dashboard::renderGUI() {
     ImGui::TextColored(logColor, "%s", latestLog.c_str());
     ImGui::End();
 
-
-    // ==========================================
-    // WIDGET 5: CONTROL BAR (BOTTOM MIDDLE)
-    // ==========================================
     ImGuiWindowFlags controlFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     
@@ -311,7 +288,6 @@ void Dashboard::renderGUI() {
     
     ImGui::SetCursorPosX((viewport->WorkSize.x - totalWidth) * 0.5f);
     
-    // Attendance Button
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f, 0.4f, 0.8f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.5f, 0.9f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.1f, 0.3f, 0.7f, 1.0f));
@@ -322,7 +298,6 @@ void Dashboard::renderGUI() {
 
     ImGui::SameLine(0, spacing);
     
-    // Violation Report Button
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.3f, 0.2f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.4f, 0.3f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.7f, 0.2f, 0.1f, 1.0f));
@@ -333,7 +308,6 @@ void Dashboard::renderGUI() {
 
     ImGui::SameLine(0, spacing);
 
-    // FEATURE 2: Exit System Button
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.3f, 0.3f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
@@ -344,9 +318,6 @@ void Dashboard::renderGUI() {
 
     ImGui::End();
 
-    // ==========================================
-    // MODAL WIDGET: VIEW ATTENDANCE
-    // ==========================================
     if (showAttendancePopup) {
         ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowPos(ImVec2(viewport->WorkSize.x * 0.5f, viewport->WorkSize.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
@@ -377,9 +348,6 @@ void Dashboard::renderGUI() {
         ImGui::End();
     }
 
-    // ==========================================
-    // MODAL WIDGET: VIEW VIOLATIONS
-    // ==========================================
     if (showViolationPopup) {
         ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowPos(ImVec2(viewport->WorkSize.x * 0.5f, viewport->WorkSize.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
@@ -413,9 +381,6 @@ void Dashboard::renderGUI() {
         ImGui::End();
     }
 
-    // ==========================================
-    // FEATURE 2: NEW EXIT & DOWNLOAD MODAL
-    // ==========================================
     static float attSaveTimer = 0.0f;
     static float vioSaveTimer = 0.0f;
 

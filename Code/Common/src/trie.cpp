@@ -117,7 +117,7 @@ void Destroy(Trie* trie) {
     trie->root = nullptr;
 }
 
-// --- NEW: Aho-Corasick Algorithm Implementation ---
+// Aho-Corasick Algorithm Implementation
 void BuildFailureLinks(Trie* trie) {
     trie->root->fail = nullptr;
     queue<TrieNode*> q;
@@ -164,7 +164,7 @@ bool AhoCorasickSearch(Trie* trie, const char* text, int len) {
 
     for (int i = 0; i < len; i++) {
         int index = CharToIndex(text[i]);
-        if (index == -1) continue; // Ignore non-mapped characters natively
+        if (index == -1) continue;
 
         while (current != nullptr && current->children[index] == nullptr) {
             current = current->fail;

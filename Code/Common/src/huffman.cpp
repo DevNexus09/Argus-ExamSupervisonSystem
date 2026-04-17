@@ -8,7 +8,7 @@ using namespace std;
 
 HuffmanCoding::HuffmanCoding() {
     root = nullptr;
-    Init(); // Initialize frequencies and build tree immediately
+    Init();
 }
 
 HuffmanCoding::~HuffmanCoding() {
@@ -23,19 +23,16 @@ void HuffmanCoding::deleteTree(HuffmanNode* node) {
 }
 
 void HuffmanCoding::Init() {
-    // 1. Define Static Frequencies 
-    // Optimized for URLs and English text to create a Universal Tree
     frequencies[' '] = 20; frequencies['e'] = 15; frequencies['t'] = 12;
     frequencies['a'] = 10; frequencies['o'] = 10; frequencies['i'] = 10;
     frequencies['n'] = 10; frequencies['s'] = 10; frequencies['r'] = 8;
     frequencies['h'] = 8;  frequencies['l'] = 7;  frequencies['c'] = 6;
     frequencies['d'] = 6;  frequencies['u'] = 5;  frequencies['m'] = 5;
-    frequencies['.'] = 15; // High freq for URLs
-    frequencies['/'] = 10; // High freq for URLs
-    frequencies[':'] = 5;  // http:
-    frequencies['w'] = 5;  // www
+    frequencies['.'] = 15; 
+    frequencies['/'] = 10; 
+    frequencies[':'] = 5;  
+    frequencies['w'] = 5;
     
-    // Default low freq for all other ASCII chars to ensure they exist in tree
     for (int i = 0; i < 256; i++) {
         if (frequencies.find((char)i) == frequencies.end()) {
             frequencies[(char)i] = 1;
@@ -82,12 +79,10 @@ void HuffmanCoding::generateCodes(HuffmanNode* node, string str) {
 void HuffmanCoding::Compress(const char* input, int inputLen, char* output, int& outputLen) {
     string bitStream = "";
     
-    // 1. Convert Input to Bit String
     for (int i = 0; i < inputLen; i++) {
         bitStream += huffmanCodes[input[i]];
     }
 
-    // 2. Bit Packing (8 bits -> 1 byte)
     outputLen = 0;
     unsigned char currentByte = 0;
     int bitIndex = 0;
@@ -105,7 +100,7 @@ void HuffmanCoding::Compress(const char* input, int inputLen, char* output, int&
         }
     }
 
-    // Handle remaining bits (padding)
+
     if (bitIndex > 0) {
         output[outputLen++] = currentByte;
     }
@@ -119,18 +114,16 @@ void HuffmanCoding::Decompress(const char* input, int inputLen, char* output, in
         unsigned char byte = input[i];
         
         for (int bitIndex = 0; bitIndex < 8; bitIndex++) {
-            // Check bit at position (7 - bitIndex)
+        
             bool isOne = (byte >> (7 - bitIndex)) & 1;
 
             if (isOne) curr = curr->right;
             else       curr = curr->left;
 
             if (!curr->left && !curr->right) {
-                // Found Leaf
                 output[outputLen++] = curr->data;
-                curr = root; // Reset to root for next char
+                curr = root; 
                 
-                // Safety check for buffer overflow
                 if (outputLen >= 511) return; 
             }
         }

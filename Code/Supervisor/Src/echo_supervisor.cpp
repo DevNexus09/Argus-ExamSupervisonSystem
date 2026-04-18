@@ -41,6 +41,8 @@ struct ClientSession {
 map<uint32_t, StudentStats> violationRecords;
 map<int, ClientSession> clientContext;
 
+HuffmanCoding supervisorHuffman;
+
 void saveReport() {
     ofstream file(REPORT_FILE);
     if (file.is_open()) {
@@ -199,6 +201,22 @@ void NetworkLoop(Dashboard& dashboard) {
                                 dashboard.recordViolation(msg.studentID, website);
                                 sendAck = true;
                                 break;
+                            }
+                            case msgViolationCompressed: {
+                            char decompressedBuffer[1024]; 
+                            int decompressedLen = 0;
+                        
+                            supervisorHuffman.Decompress(msg.data, msg.dataLength, decompressedBuffer, decompressedLen);
+                            decompressedBuffer[decompressedLen] = '\0';
+                            
+                            string website(decompressedBuffer);
+                            
+                            violationRecords[msg.studentID].name = sName;
+                            violationRecords[msg.studentID].totalViolations++;
+                            saveReport();
+                            dashboard.recordViolation(msg.studentID, website);
+                            sendAck = true;
+                            break;
                             }
                             case msgHeartbeat: {
                                 dashboard.updateHeartbeat(msg.studentID);

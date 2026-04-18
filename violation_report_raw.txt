@@ -1,3 +1,2 @@
 Student Name, Student ID, Total Violations
-ash, 122, 9
-Ashish, 1622, 88
+ashihs, 23423, 48

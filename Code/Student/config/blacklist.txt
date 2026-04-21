@@ -1,5 +1,38 @@
-# blacklist.txt - DPI Blocked Keywords
+DPI Blocked Keywords
 chatgpt
 facebook
 tiktok
 torrent
+ChatGPT
+Gemini
+Claude
+Copilot
+Meta AI
+Perplexity AI
+Pi
+Grok
+Mistral
+Le Chat
+Midjourney
+DALL-E 3
+Stable Diffusion
+Adobe Firefly
+Leonardo AI
+Ideogram
+Sora
+Runway
+Pika
+Luma Dream Machine
+Kling AI
+Suno
+Udio
+ElevenLabs
+Suno Bark
+GitHub Copilot
+Cursor
+Tabnine
+Amazon Q
+Codeium
+Hugging Face
+Kaggle
+Ollama

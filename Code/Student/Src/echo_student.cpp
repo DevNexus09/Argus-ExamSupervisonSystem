@@ -122,7 +122,7 @@ bool performHandshake() {
     cout << "[Security] Initiating Secure Handshake..." << endl;
     
     Message initMsg = CreateMsg(msgHandshakeInit, currentStudentID, time(0), 0, NULL, 0);
-    strncpy(initMsg.studentName, currentStudentName, 31); // BUG 1 FIX: Send name on Init
+    strncpy(initMsg.studentName, currentStudentName, 31);
     char buffer[1024];
     int size = serialize(initMsg, buffer, ""); 
     if (send(sock, buffer, size, 0) < 0) {
@@ -152,8 +152,6 @@ bool performHandshake() {
     for (int i = 0; i < 16; ++i) {
         currentSessionKey += chars[rand() % chars.length()];
     }
-
-    cout << "[Security] Generated Session Key: " << currentSessionKey << endl;
 
     char encryptedPayload[512];
     int payloadOffset = 0;
@@ -380,53 +378,37 @@ void checkTampering() {
 }
 
 string findActiveInterface() {
-    ifstream routeFile("/proc/net/route");
-    if (routeFile.is_open()) {
-        string line;
-        getline(routeFile, line);
-        while (getline(routeFile, line)) {
-            stringstream ss(line);
-            string iface, dest;
-            ss >> iface >> dest;
-            if (dest == "00000000") {
-                routeFile.close();
-                return iface;
-            }
-        }
-        routeFile.close();
-    }
-
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_if_t *alldevs, *d;
-    string selected = "";
-    bool foundPreferred = false;
-
+    
     if (pcap_findalldevs(&alldevs, errbuf) != -1) {
+        // Priority 1: Explicitly look for the friend's Linux interface (eno2) or your Mac interface (en0)
         for (d = alldevs; d; d = d->next) {
-            if (string(d->name) == "en0") {
-                selected = "en0";
-                foundPreferred = true;
-                break;
+            if (string(d->name) == "eno2" || string(d->name) == "en0") {
+                string selected = d->name;
+                pcap_freealldevs(alldevs);
+                return selected;
             }
         }
-
-        if (!foundPreferred) {
-            for (d = alldevs; d; d = d->next) {
-                string name = d->name;
-                if (name.find("lo") == string::npos && 
-                    name.find("bridge") == string::npos && 
-                    name.find("p2p") == string::npos && 
-                    name.find("utun") == string::npos &&
-                    name.find("ap") == string::npos &&    
-                    name.find("awdl") == string::npos) {  
-                    selected = name;
-                    break;
-                }
+        
+        // Priority 2: Fallback to the first non-loopback/non-virtual interface it can find
+        for (d = alldevs; d; d = d->next) {
+            string name = d->name;
+            if (name.find("lo") == string::npos && 
+                name.find("bridge") == string::npos && 
+                name.find("p2p") == string::npos && 
+                name.find("utun") == string::npos) {  
+                
+                string selected = d->name;
+                pcap_freealldevs(alldevs);
+                return selected;
             }
         }
         pcap_freealldevs(alldevs);
     }
-    return selected;
+    
+    // Absolute fallback if pcap fails
+    return "eno2"; 
 }
 
 string parseDNSName(const u_char* packet, int& offset) {
@@ -664,27 +646,19 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
                     if (!isAllowed) {
                         cout << "[UNAUTHORIZED DNS] " << website << " detected!" << endl;
                         
-                        char compressedBuffer[512];
-                        int compressedLen = 0;
-                        studentHuffman.Compress(website.c_str(), website.length(), compressedBuffer, compressedLen);
-
-                        Message msg;
+                        // FIX 1: Zero-initialize the struct to wipe Linux stack garbage
+                        Message msg = {}; 
                         msg.studentID = currentStudentID;
                         strncpy(msg.studentName, currentStudentName, 31);
                         if (isTimeSynced) msg.timestamp = time(0) + clockOffset;
                         else msg.timestamp = time(0);
                         msg.sequenceNumber = 0; 
 
-                        if (compressedLen > 0 && compressedLen < website.length()) {
-                            cout << "  -> Compressing violation data (" << website.length() << "B -> " << compressedLen << "B)" << endl;
-                            msg.msgType = msgViolationCompressed;
-                            memcpy(msg.data, compressedBuffer, compressedLen);
-                            msg.dataLength = compressedLen;
-                        } else {
-                            msg.msgType = msgViolation;
-                            strncpy(msg.data, website.c_str(), sizeof(msg.data) - 1);
-                            msg.dataLength = website.length();
-                        }
+                        // FIX 2: Send raw text to avoid cross-OS Huffman mismatches
+                        msg.msgType = msgViolation;
+                        strncpy(msg.data, website.c_str(), sizeof(msg.data) - 1);
+                        msg.dataLength = website.length();
+                        
                         sendMessage(msg);
                     }
                 }
@@ -738,25 +712,19 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
                     
                     if (!isAllowed) {
                         cout << "[UNAUTHORIZED HTTPS SNI] " << sni << " detected!" << endl;
-                        char compressedBuffer[512];
-                        int compressedLen = 0;
-                        studentHuffman.Compress(sni.c_str(), sni.length(), compressedBuffer, compressedLen);
-                        Message msg;
+                        // FIX 1: Zero-initialize the struct
+                        Message msg = {}; 
                         msg.studentID = currentStudentID;
                         strncpy(msg.studentName, currentStudentName, 31);
                         if (isTimeSynced) msg.timestamp = time(0) + clockOffset;
                         else msg.timestamp = time(0);
                         msg.sequenceNumber = 0; 
 
-                        if (compressedLen > 0 && compressedLen < sni.length()) {
-                            msg.msgType = msgViolationCompressed;
-                            memcpy(msg.data, compressedBuffer, compressedLen);
-                            msg.dataLength = compressedLen;
-                        } else {
-                            msg.msgType = msgViolation;
-                            strncpy(msg.data, sni.c_str(), sizeof(msg.data) - 1);
-                            msg.dataLength = sni.length();
-                        }
+                        // FIX 2: Send raw text
+                        msg.msgType = msgViolation;
+                        strncpy(msg.data, sni.c_str(), sizeof(msg.data) - 1);
+                        msg.dataLength = sni.length();
+                        
                         sendMessage(msg);
                     }
                 }

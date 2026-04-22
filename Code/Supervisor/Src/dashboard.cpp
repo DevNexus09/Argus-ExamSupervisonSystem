@@ -9,88 +9,6 @@
 
 using namespace std;
 
-static void GeneratePDF(const string& title, const vector<string>& headers, const vector<vector<string>>& data, const string& filename) {
-    ofstream file(filename, ios::binary);
-    if(!file.is_open()) return;
-
-    int rowHeight = 20;
-    int headerHeight = 100;
-    int totalHeight = std::max(842, headerHeight + (int)data.size() * rowHeight + 50);
-
-    file << "%PDF-1.4\n";
-    vector<long> xrefs;
-    xrefs.push_back(0);
-
-    auto startObj = [&]() {
-        xrefs.push_back(file.tellp());
-        file << xrefs.size() - 1 << " 0 obj\n";
-        return xrefs.size() - 1;
-    };
-
-    int catalog = startObj();
-    file << "<< /Type /Catalog /Pages 2 0 R >>\nendobj\n";
-
-    int pages = startObj();
-    file << "<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n";
-
-    int page = startObj();
-    file << "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 " << totalHeight << "] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n";
-
-    int contents = startObj();
-    stringstream stream;
-    
-    auto esc = [](const string& s) {
-        string r;
-        for(char c : s) {
-            if(c=='('||c==')'||c=='\\') r+='\\';
-            r+=c;
-        }
-        return r;
-    };
-
-    auto pad = [](string s, size_t w) {
-        if(s.length() < w) s.append(w - s.length(), ' ');
-        return s;
-    };
-
-    stream << "BT\n/F1 18 Tf\n50 " << totalHeight - 50 << " Td\n(" << esc(title) << ") Tj\nET\n";
-    
-    stream << "BT\n/F1 12 Tf\n";
-    int y = totalHeight - 90;
-    
-    string headerLine = pad(headers[0], 10) + pad(headers[1], 20) + pad(headers[2], 40);
-    if(headers.size() > 3) headerLine += pad(headers[3], 20);
-
-    stream << "50 " << y << " Td\n(" << esc(headerLine) << ") Tj\n";
-    
-    for(auto& row : data) {
-        string rowLine = pad(row[0], 10) + pad(row[1], 20) + pad(row[2], 40);
-        if(row.size() > 3) rowLine += pad(row[3], 20);
-        
-        stream << "0 -20 Td\n(" << esc(rowLine) << ") Tj\n";
-    }
-    stream << "ET\n";
-
-    string streamStr = stream.str();
-    file << "<< /Length " << streamStr.length() << " >>\nstream\n" << streamStr << "\nendstream\nendobj\n";
-
-    int font = startObj();
-    file << "<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>\nendobj\n"; 
-
-    long xrefOffset = file.tellp();
-    file << "xref\n0 " << xrefs.size() << "\n0000000000 65535 f \n";
-    for(size_t i = 1; i < xrefs.size(); i++) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%010ld 00000 n \n", xrefs[i]);
-        file << buf;
-    }
-
-    file << "trailer\n<< /Size " << xrefs.size() << " /Root 1 0 R >>\n";
-    file << "startxref\n" << xrefOffset << "\n%%EOF\n";
-    file.close();
-}
-
-
 Dashboard::Dashboard() {
     activeConnections = 0;
     totalViolations = 0;
@@ -98,8 +16,6 @@ Dashboard::Dashboard() {
     studentPQ = new PriorityQueue();
     latestLog = "System Started. Awaiting connections...";
     showAttendancePopup = false;
-    showViolationPopup = false;
-    showExitPopup = false;
     systemShouldExit = false;
 }
 
@@ -194,7 +110,6 @@ void Dashboard::renderGUI() {
     ImGui::SetWindowFontScale(1.0f); 
 
     ImGui::End();
-
     ImGui::SetNextWindowSize(winSize, ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(460, 40), ImGuiCond_FirstUseEver);
     ImGui::Begin("⚠️ Top Violators", nullptr, winFlags);
@@ -284,10 +199,11 @@ void Dashboard::renderGUI() {
     
     float btnWidth = 180.0f;
     float spacing = 20.0f;
-    float totalWidth = (btnWidth * 3) + (spacing * 2);
+    float totalWidth = (btnWidth * 2) + spacing;
     
     ImGui::SetCursorPosX((viewport->WorkSize.x - totalWidth) * 0.5f);
     
+    // View Attendance Button
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f, 0.4f, 0.8f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.5f, 0.9f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.1f, 0.3f, 0.7f, 1.0f));
@@ -297,22 +213,42 @@ void Dashboard::renderGUI() {
     ImGui::PopStyleColor(3);
 
     ImGui::SameLine(0, spacing);
-    
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.3f, 0.2f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.4f, 0.3f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.7f, 0.2f, 0.1f, 1.0f));
-    if (ImGui::Button("⚠️ View Violations", ImVec2(btnWidth, 40))) {
-        showViolationPopup = true;
-    }
-    ImGui::PopStyleColor(3);
 
-    ImGui::SameLine(0, spacing);
-
+    // Exit Button - Saves to Text Files directly and exits
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.3f, 0.3f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
     if (ImGui::Button("🛑 Exit System", ImVec2(btnWidth, 40))) {
-        showExitPopup = true;
+        
+        // 1. Generate text-based Attendance Sheet
+        ofstream attFile("Attendance_Sheet.txt");
+        if (attFile.is_open()) {
+            attFile << "Serial\tStudent ID\tStudent Name\n";
+            attFile << "--------------------------------------------------\n";
+            int serial = 1;
+            for (const auto& pair : studentRegistry) {
+                if (pair.second.isConnected) {
+                    attFile << serial++ << "\t" << pair.first << "\t\t" << pair.second.name << "\n";
+                }
+            }
+            attFile.close();
+        }
+
+        // 2. Generate text-based Violation Report
+        ofstream vioFile("Violation_Report.txt");
+        if (vioFile.is_open()) {
+            vioFile << "Serial\tStudent ID\tStudent Name\t\tViolations\n";
+            vioFile << "------------------------------------------------------------------\n";
+            int serial = 1;
+            for (const auto& pair : studentViolationCounts) {
+                uint32_t sid = std::stoul(pair.first);
+                string name = studentRegistry.count(sid) ? studentRegistry[sid].name : "Unknown";
+                vioFile << serial++ << "\t" << pair.first << "\t\t" << name << "\t\t" << pair.second << "\n";
+            }
+            vioFile.close();
+        }
+
+        systemShouldExit = true; 
     }
     ImGui::PopStyleColor(3);
 
@@ -346,109 +282,5 @@ void Dashboard::renderGUI() {
             }
         }
         ImGui::End();
-    }
-
-    if (showViolationPopup) {
-        ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowPos(ImVec2(viewport->WorkSize.x * 0.5f, viewport->WorkSize.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-        
-        if (ImGui::Begin("⚠️ Violation Records List", &showViolationPopup, ImGuiWindowFlags_NoCollapse)) {
-            ImGui::Text("All violations recorded during this session:");
-            ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
-            
-            if (ImGui::BeginTable("ViolationReportTable", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
-                ImGui::TableSetupColumn("Serial", ImGuiTableColumnFlags_WidthFixed, 50.0f);
-                ImGui::TableSetupColumn("Student ID", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-                ImGui::TableSetupColumn("Student Name");
-                ImGui::TableSetupColumn("Violations", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-                ImGui::TableSetupScrollFreeze(0, 1);
-                ImGui::TableHeadersRow();
-
-                int serial = 1;
-                for (const auto& pair : studentViolationCounts) {
-                    uint32_t sid = std::stoul(pair.first);
-                    string name = studentRegistry.count(sid) ? studentRegistry[sid].name : "Unknown";
-
-                    ImGui::TableNextRow();
-                    ImGui::TableSetColumnIndex(0); ImGui::Text("%d", serial++);
-                    ImGui::TableSetColumnIndex(1); ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "%s", pair.first.c_str());
-                    ImGui::TableSetColumnIndex(2); ImGui::Text("%s", name.c_str());
-                    ImGui::TableSetColumnIndex(3); ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%d", pair.second);
-                }
-                ImGui::EndTable();
-            }
-        }
-        ImGui::End();
-    }
-
-    static float attSaveTimer = 0.0f;
-    static float vioSaveTimer = 0.0f;
-
-    if (showExitPopup) {
-        ImGui::OpenPopup("System Shutdown & Reports");
-        showExitPopup = false; 
-    }
-
-    ImGui::SetNextWindowSize(ImVec2(450, 300), ImGuiCond_Always);
-    ImGui::SetNextWindowPos(ImVec2(viewport->WorkSize.x * 0.5f, viewport->WorkSize.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    
-    if (ImGui::BeginPopupModal("System Shutdown & Reports", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse)) {
-        
-        ImGui::TextWrapped("Before turning off the server, please download your official PDF reports.");
-        ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
-        
-        if (ImGui::Button("⬇️ Download Final Attendance PDF", ImVec2(-1, 40))) {
-            vector<string> headers = {"Serial", "Student ID", "Student Name"};
-            vector<vector<string>> pdfData;
-            int serial = 1;
-            for (const auto& pair : studentRegistry) {
-                if (pair.second.isConnected) {
-                    pdfData.push_back({to_string(serial++), to_string(pair.first), pair.second.name});
-                }
-            }
-            GeneratePDF("ARGUS Official Exam Attendance", headers, pdfData, "Attendance_Sheet.pdf");
-            attSaveTimer = 3.0f; 
-        }
-        if (attSaveTimer > 0.0f) {
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Attendance_Sheet.pdf successfully saved!");
-            attSaveTimer -= ImGui::GetIO().DeltaTime;
-        }
-
-        ImGui::Spacing();
-
-        if (ImGui::Button("⬇️ Download Final Violations PDF", ImVec2(-1, 40))) {
-            vector<string> headers = {"Serial", "Student ID", "Student Name", "Violations"};
-            vector<vector<string>> pdfData;
-            int serial = 1;
-            for (const auto& pair : studentViolationCounts) {
-                uint32_t sid = std::stoul(pair.first);
-                string name = studentRegistry.count(sid) ? studentRegistry[sid].name : "Unknown";
-                pdfData.push_back({to_string(serial++), pair.first, name, to_string(pair.second)});
-            }
-            GeneratePDF("ARGUS Official Violation Report", headers, pdfData, "Violation_Report.pdf");
-            vioSaveTimer = 3.0f;
-        }
-        if (vioSaveTimer > 0.0f) {
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Violation_Report.pdf successfully saved!");
-            vioSaveTimer -= ImGui::GetIO().DeltaTime;
-        }
-
-        ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
-        
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.3f, 0.3f, 1.0f));
-        if (ImGui::Button("Confirm Power Off", ImVec2(200, 40))) {
-            systemShouldExit = true; 
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::PopStyleColor(2);
-        
-        ImGui::SameLine();
-        
-        if (ImGui::Button("Cancel", ImVec2(200, 40))) {
-            ImGui::CloseCurrentPopup();
-        }
-        
-        ImGui::EndPopup();
     }
 }

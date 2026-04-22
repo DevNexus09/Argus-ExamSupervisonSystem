@@ -26,10 +26,7 @@ private:
     std::string latestLog;
     
     std::map<uint32_t, StudentData> studentRegistry; 
-    
     bool showAttendancePopup;
-    bool showViolationPopup;
-    bool showExitPopup;
 
     std::mutex dataMutex;
 

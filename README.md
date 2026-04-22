@@ -18,7 +18,6 @@ Developed for the **Software Project Lab 1** at the **Institute of Information T
 
 ### 🧠 The Algorithmic Engine
 Argus is built on highly optimized data structures to ensure enforcement happens with zero network latency:
-* **String Matching:** **Aho-Corasick Automaton** (Trie + BFS failure links) for O(n) simultaneous multi-pattern scanning of raw payloads.
 * **Domain Resolution:** Trie-based recursive wildcard matching and **Polynomial Rolling Hashes** for $O(1)$ lookups.
 * **Information Theory:** VPN detection via the Shannon Entropy formula:
   $$H(X) = - \sum_{i=1}^{n} P(x_i) \log_2 P(x_i)$$

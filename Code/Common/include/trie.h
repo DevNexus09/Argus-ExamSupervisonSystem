@@ -34,7 +34,5 @@ bool Search(Trie* trie, const string& domain);
 bool WildcardMatch(Trie* trie, const string& domain);
 bool Load(Trie* trie, const string& filename);
 void Destroy(Trie* trie);
-void BuildFailureLinks(Trie* trie);
-bool AhoCorasickSearch(Trie* trie, const char* text, int len);
 
 #endif

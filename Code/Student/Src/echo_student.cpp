@@ -46,7 +46,6 @@ pcap_t *handle = nullptr;
 uint32_t currentStudentID = 0;
 char currentStudentName[32];
 Trie whitelistTrie;
-Trie blacklistTrie; 
 string currentSessionKey = ""; 
 
 HuffmanCoding studentHuffman;
@@ -215,6 +214,7 @@ bool connectToServer() {
     return true;
 }
 
+// Time Synchronization Using Christian's Algorithm
 void synchronizeClock() {
     if (sock == 0) connectToServer();
     if (sock == 0) {
@@ -382,7 +382,6 @@ string findActiveInterface() {
     pcap_if_t *alldevs, *d;
     
     if (pcap_findalldevs(&alldevs, errbuf) != -1) {
-        // Priority 1: Explicitly look for the friend's Linux interface (eno2) or your Mac interface (en0)
         for (d = alldevs; d; d = d->next) {
             if (string(d->name) == "eno2" || string(d->name) == "en0") {
                 string selected = d->name;
@@ -390,8 +389,6 @@ string findActiveInterface() {
                 return selected;
             }
         }
-        
-        // Priority 2: Fallback to the first non-loopback/non-virtual interface it can find
         for (d = alldevs; d; d = d->next) {
             string name = d->name;
             if (name.find("lo") == string::npos && 
@@ -407,7 +404,6 @@ string findActiveInterface() {
         pcap_freealldevs(alldevs);
     }
     
-    // Absolute fallback if pcap fails
     return "eno2"; 
 }
 
@@ -471,49 +467,6 @@ void loadWhitelist() {
     }
     file.close();
     cout << "[System] Whitelist loaded from " << loadedPath << " (" << count << " entries)." << endl;
-}
-
-void loadBlacklist() {
-    const char* paths[] = {
-        "Code/Student/config/blacklist.txt",
-        "../config/blacklist.txt",
-        "blacklist.txt"
-    };
-
-    ifstream file;
-    string loadedPath = "";
-
-    for (const char* path : paths) {
-        file.open(path);
-        if (file.is_open()) {
-            loadedPath = path;
-            break;
-        }
-        file.clear();
-    }
-
-    if (!file.is_open()) {
-        cout << "[System] Blacklist file not found, loading defaults for DPI." << endl;
-        Insert(&blacklistTrie, "chatgpt");
-        Insert(&blacklistTrie, "facebook");
-        Insert(&blacklistTrie, "tiktok");
-        Insert(&blacklistTrie, "instagram");
-        Insert(&blacklistTrie, "discord");
-    } else {
-        string line;
-        int count = 0;
-        while (getline(file, line)) {
-            string keyword = trim(line);
-            if (keyword.empty() || keyword[0] == '#' || keyword[0] == '[') continue;
-            Insert(&blacklistTrie, keyword);
-            count++;
-        }
-        file.close();
-        cout << "[System] Blacklist loaded from " << loadedPath << " (" << count << " entries)." << endl;
-    }
-
-    BuildFailureLinks(&blacklistTrie);
-    cout << "[System] Aho-Corasick Automaton Built for DPI Payload Scanning." << endl;
 }
 
 // Shannon Entropy for VPN Detection
@@ -646,7 +599,6 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
                     if (!isAllowed) {
                         cout << "[UNAUTHORIZED DNS] " << website << " detected!" << endl;
                         
-                        // FIX 1: Zero-initialize the struct to wipe Linux stack garbage
                         Message msg = {}; 
                         msg.studentID = currentStudentID;
                         strncpy(msg.studentName, currentStudentName, 31);
@@ -654,7 +606,6 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
                         else msg.timestamp = time(0);
                         msg.sequenceNumber = 0; 
 
-                        // FIX 2: Send raw text to avoid cross-OS Huffman mismatches
                         msg.msgType = msgViolation;
                         strncpy(msg.data, website.c_str(), sizeof(msg.data) - 1);
                         msg.dataLength = website.length();
@@ -712,7 +663,6 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
                     
                     if (!isAllowed) {
                         cout << "[UNAUTHORIZED HTTPS SNI] " << sni << " detected!" << endl;
-                        // FIX 1: Zero-initialize the struct
                         Message msg = {}; 
                         msg.studentID = currentStudentID;
                         strncpy(msg.studentName, currentStudentName, 31);
@@ -720,7 +670,6 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
                         else msg.timestamp = time(0);
                         msg.sequenceNumber = 0; 
 
-                        // FIX 2: Send raw text
                         msg.msgType = msgViolation;
                         strncpy(msg.data, sni.c_str(), sizeof(msg.data) - 1);
                         msg.dataLength = sni.length();
@@ -728,14 +677,6 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
                         sendMessage(msg);
                     }
                 }
-            }
-
-            if (AhoCorasickSearch(&blacklistTrie, (const char*)payload, payload_len)) {
-                string alertMsg = "DPI Blocked Content. Dest IP: " + string(dest_ip);
-                cout << "\n[SECURITY ALERT] Deep Packet Inspection Flagged Raw Payload Content!" << endl;
-                Message msg = CreateMsg(msgViolation, currentStudentID, time(0), 0, alertMsg.c_str(), alertMsg.length());
-                strncpy(msg.studentName, currentStudentName, 31);
-                sendMessage(msg);
             }
         }
 
@@ -774,7 +715,6 @@ void run_student_logic_thread() {
         }
 
         loadWhitelist();
-        loadBlacklist(); 
         
         lastHeartbeatTime = time(0);
         lastCheckTime = time(0);

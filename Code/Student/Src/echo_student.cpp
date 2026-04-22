@@ -534,6 +534,7 @@ void loadBlacklist() {
     cout << "[System] Aho-Corasick Automaton Built for DPI Payload Scanning." << endl;
 }
 
+// Shannon Entropy for VPN Detection
 double calculateShannonEntropy(const u_char* data, int length) {
     if (length <= 0) return 0.0;
     int counts[256] = {0};

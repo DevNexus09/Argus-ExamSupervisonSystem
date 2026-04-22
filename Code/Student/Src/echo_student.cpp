@@ -109,7 +109,7 @@ void sendWatchdogAlert() {
 
     string alertStr = "Watchdog: Student Monitoring Thread/Process Killed!";
     Message msg = CreateMsg(msgTamper, currentStudentID, time(0), 0, alertStr.c_str(), alertStr.length());
-    strncpy(msg.studentName, currentStudentName, 31); // BUG 1 FIX: Attach name
+    strncpy(msg.studentName, currentStudentName, 31);
     
     char buffer[1024];
     int msgSize = serialize(msg, buffer, ""); 
@@ -231,7 +231,7 @@ void synchronizeClock() {
 
     for (int i = 0; i < 3; i++) {
         Message req = CreateMsg(msgTimeRequest, currentStudentID, time(0), 0, NULL, 0);
-        strncpy(req.studentName, currentStudentName, 31); // BUG 1 FIX
+        strncpy(req.studentName, currentStudentName, 31);
         
         auto t0 = std::chrono::steady_clock::now(); 
         
@@ -681,23 +681,26 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
         }
 
         string flowKey = string(dest_ip) + ":" + to_string(dport);
-        double entropy = calculateShannonEntropy(payload, payload_len);
-        FlowData& flow = activeFlows[flowKey];
-        
-        if (!flow.alerted && flow.packetCount < 20) {
-            flow.packetCount++;
-            flow.totalEntropy += entropy;
+        if (payload_len > 256) { 
+            double entropy = calculateShannonEntropy(payload, payload_len);
+            FlowData& flow = activeFlows[flowKey];
             
-            if (flow.packetCount >= 10) {
-                double avgEntropy = flow.totalEntropy / flow.packetCount;
-                if (avgEntropy > 7.8) {
-                    flow.alerted = true; 
-                    string alertMsg = "Potential VPN/Encrypted Tunnel Detected. Destination: " + string(dest_ip) + ". Sustained Entropy: " + to_string(avgEntropy);
-                    cout << "\n[SECURITY ALERT] " << alertMsg << endl;
+            if (!flow.alerted && flow.packetCount < 15) {
+                flow.packetCount++;
+                flow.totalEntropy += entropy;
+                
+                if (flow.packetCount >= 8) {
+                    double avgEntropy = flow.totalEntropy / flow.packetCount;
                     
-                    Message msg = CreateMsg(msgViolation, currentStudentID, time(0), 0, alertMsg.c_str(), alertMsg.length());
-                    strncpy(msg.studentName, currentStudentName, 31);
-                    sendMessage(msg);
+                    if (avgEntropy > 7.7) { 
+                        flow.alerted = true; 
+                        string alertMsg = "Potential VPN/Encrypted Tunnel Detected. Destination: " + string(dest_ip) + ". Sustained Entropy: " + to_string(avgEntropy);
+                        cout << "\n[SECURITY ALERT] " << alertMsg << endl;
+                        
+                        Message msg = CreateMsg(msgViolation, currentStudentID, time(0), 0, alertMsg.c_str(), alertMsg.length());
+                        strncpy(msg.studentName, currentStudentName, 31);
+                        sendMessage(msg);
+                    }
                 }
             }
         }

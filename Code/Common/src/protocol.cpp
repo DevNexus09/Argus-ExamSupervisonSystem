@@ -175,7 +175,6 @@ int deserialize(const char* buffer, Message* msg, const std::string& key) {
     // Decrypt Layer (RC4)
     SecureDecrypt(msg->data, dataSize, key);
     
-    // Decompression Layer (Huffman)
     if (msg->msgType == msgViolationCompressed) {
         char decompressedData[512];
         int newLen = 0;

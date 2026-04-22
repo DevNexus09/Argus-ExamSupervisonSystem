@@ -43,19 +43,6 @@ map<int, ClientSession> clientContext;
 
 HuffmanCoding supervisorHuffman;
 
-void saveReport() {
-    ofstream file(REPORT_FILE);
-    if (file.is_open()) {
-        file << "Student Name, Student ID, Total Violations" << endl;
-        for (const auto& entry : violationRecords) {
-            file << entry.second.name << ", "
-                 << entry.first << ", "
-                 << entry.second.totalViolations << endl;
-        }
-        file.close();
-    }
-}
-
 std::atomic<bool> isServerRunning(true);
 
 void NetworkLoop(Dashboard& dashboard) {
@@ -197,7 +184,6 @@ void NetworkLoop(Dashboard& dashboard) {
                                 string website(msg.data);
                                 violationRecords[msg.studentID].name = sName;
                                 violationRecords[msg.studentID].totalViolations++;
-                                saveReport();
                                 dashboard.recordViolation(msg.studentID, website);
                                 sendAck = true;
                                 break;
@@ -213,7 +199,6 @@ void NetworkLoop(Dashboard& dashboard) {
                             
                             violationRecords[msg.studentID].name = sName;
                             violationRecords[msg.studentID].totalViolations++;
-                            saveReport();
                             dashboard.recordViolation(msg.studentID, website);
                             sendAck = true;
                             break;
@@ -226,7 +211,7 @@ void NetworkLoop(Dashboard& dashboard) {
                                 string alert(msg.data);
                                 violationRecords[msg.studentID].name = sName;
                                 violationRecords[msg.studentID].totalViolations++;
-                                saveReport();
+    
                                 dashboard.recordTampering(msg.studentID);
                                 sendAck = true;
                                 break;

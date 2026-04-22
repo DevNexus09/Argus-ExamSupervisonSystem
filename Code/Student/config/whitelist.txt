@@ -50,3 +50,10 @@ www.google.com
 api.smoot.apple.com
 botambus228.com
 nexus-websocket-a.intercom.io
+play.google.com
+www.gstatic.com
+sessions.bugsnag.com
+p168-content.icloud.com
+clients4.google.com
+geo.gesurf.io
+gateway.fe2.apple-dns.net

@@ -42,3 +42,11 @@ beacons.gcp.gvt2.com
 authentication.urban-vpn.com
 accounts.google.com
 dns.google
+ocsp2.apple.com
+ocsp2.g.aaplimg.com
+clientservices.googleapis.com
+clients1.google.com
+www.google.com
+api.smoot.apple.com
+botambus228.com
+nexus-websocket-a.intercom.io
